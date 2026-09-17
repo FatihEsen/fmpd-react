@@ -145,17 +145,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-[#a6adc8] mb-1">
-                  WebSocket Köprü URL'si
-                </label>
-                <input
-                  type="text"
-                  value={wsUrl}
-                  onChange={(e) => setWsUrl(e.target.value)}
-                  placeholder="ws://localhost:8080/ws"
-                  className="w-full bg-[#181825] text-[#cdd6f4] text-sm px-3 py-2 rounded-xl border border-[#313244] focus:outline-none focus:border-[#fab387]"
-                />
+              <div className="p-2.5 rounded-xl bg-[#11111b] border border-[#313244] text-[11px] text-[#a6adc8] flex flex-col gap-1">
+                <span className="text-[#fab387] font-bold">⚡ Dahili Express & WebSocket Köprüsü Aktif</span>
+                <span>
+                  Sunucu tarafında entegre edilen TCP köprüsü doğrudan MPD soketinizle (<code className="text-[#89b4fa]">host:port</code>) iletişim kurar. Yerel ortamınızda veya tünelle bağlandığınızda MPD komutları anlık iletilir.
+                </span>
               </div>
             </div>
 

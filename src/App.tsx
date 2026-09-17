@@ -27,6 +27,7 @@ import { ShortcutsModal } from './components/modals/ShortcutsModal';
 import { AddStreamModal } from './components/modals/AddStreamModal';
 import { SavePlaylistModal } from './components/modals/SavePlaylistModal';
 import { SettingsModal } from './components/modals/SettingsModal';
+import { useMpdBridge } from './hooks/useMpdBridge';
 
 export default function App() {
   // --- State ---
@@ -86,6 +87,34 @@ export default function App() {
     }, 2800);
   }, []);
 
+  // Native MPD Bridge integration hook
+  const {
+    bridgeConnected,
+    isConnecting,
+    connectBridge,
+    sendMpdCommand,
+    fetchQueue,
+    fetchLibrary,
+  } = useMpdBridge(config, showToast);
+
+  // Sync bridge state into config
+  useEffect(() => {
+    if (!config.isDemoMode) {
+      setConfig((prev) => ({ ...prev, connected: bridgeConnected }));
+    }
+  }, [bridgeConnected, config.isDemoMode]);
+
+  // Sync queue from real MPD when connected
+  useEffect(() => {
+    if (!config.isDemoMode && bridgeConnected) {
+      fetchQueue().then((mpdQueue) => {
+        if (mpdQueue && mpdQueue.length > 0) {
+          setQueue(mpdQueue);
+        }
+      });
+    }
+  }, [config.isDemoMode, bridgeConnected, fetchQueue]);
+
   // Collect all songs in the library for search
   const allLibrarySongs = React.useMemo(() => {
     const list: Song[] = [];
@@ -142,18 +171,32 @@ export default function App() {
   // --- Controls Handlers ---
   const handlePlay = () => {
     setStatus((prev) => ({ ...prev, state: 'play' }));
+    if (!config.isDemoMode && bridgeConnected) {
+      sendMpdCommand('play');
+    }
   };
 
   const handlePause = () => {
     setStatus((prev) => ({ ...prev, state: 'pause' }));
+    if (!config.isDemoMode && bridgeConnected) {
+      sendMpdCommand('pause 1');
+    }
   };
 
   const handleStop = () => {
     setStatus((prev) => ({ ...prev, state: 'stop', elapsed: 0 }));
+    if (!config.isDemoMode && bridgeConnected) {
+      sendMpdCommand('stop');
+    }
   };
 
   const handleNext = () => {
     if (queue.length === 0) return;
+
+    if (!config.isDemoMode && bridgeConnected) {
+      sendMpdCommand('next');
+      return;
+    }
 
     if (status.random) {
       const randIndex = Math.floor(Math.random() * queue.length);
@@ -176,6 +219,11 @@ export default function App() {
   const handlePrev = () => {
     if (queue.length === 0) return;
 
+    if (!config.isDemoMode && bridgeConnected) {
+      sendMpdCommand('previous');
+      return;
+    }
+
     // If more than 3 seconds in, restart track
     if (status.elapsed > 3) {
       setStatus((prev) => ({ ...prev, elapsed: 0 }));
@@ -192,11 +240,17 @@ export default function App() {
 
   const handleSeek = (seconds: number) => {
     setStatus((prev) => ({ ...prev, elapsed: Math.max(0, Math.floor(seconds)) }));
+    if (!config.isDemoMode && bridgeConnected && currentSong) {
+      sendMpdCommand(`seekcur ${Math.max(0, Math.floor(seconds))}`);
+    }
   };
 
   const handleToggleRandom = () => {
     setStatus((prev) => {
       const next = !prev.random;
+      if (!config.isDemoMode && bridgeConnected) {
+        sendMpdCommand(`random ${next ? 1 : 0}`);
+      }
       showToast(next ? 'Rastgele Çalma Açık' : 'Rastgele Çalma Kapalı');
       return { ...prev, random: next };
     });
@@ -205,6 +259,9 @@ export default function App() {
   const handleToggleRepeat = () => {
     setStatus((prev) => {
       const next = !prev.repeat;
+      if (!config.isDemoMode && bridgeConnected) {
+        sendMpdCommand(`repeat ${next ? 1 : 0}`);
+      }
       showToast(next ? 'Tekrar Modu Açık' : 'Tekrar Modu Kapalı');
       return { ...prev, repeat: next };
     });
@@ -213,6 +270,9 @@ export default function App() {
   const handleToggleSingle = () => {
     setStatus((prev) => {
       const next = !prev.single;
+      if (!config.isDemoMode && bridgeConnected) {
+        sendMpdCommand(`single ${next ? 1 : 0}`);
+      }
       showToast(next ? 'Tek Şarkı Modu Açık' : 'Tek Şarkı Modu Kapalı');
       return { ...prev, single: next };
     });
@@ -221,6 +281,9 @@ export default function App() {
   const handleToggleConsume = () => {
     setStatus((prev) => {
       const next = !prev.consume;
+      if (!config.isDemoMode && bridgeConnected) {
+        sendMpdCommand(`consume ${next ? 1 : 0}`);
+      }
       showToast(next ? 'Tüketim Modu (Consume) Açık' : 'Tüketim Modu Kapalı');
       return { ...prev, consume: next };
     });
@@ -469,13 +532,27 @@ export default function App() {
     showToast('Akış silindi.');
   };
 
-  // --- Database Update simulation ---
-  const handleUpdateDb = () => {
+  // --- Database Update simulation / bridge ---
+  const handleUpdateDb = async () => {
     setIsUpdatingDb(true);
+    if (!config.isDemoMode && bridgeConnected) {
+      await sendMpdCommand('update');
+      showToast('MPD "update" komutu gönderildi.');
+    } else {
+      setTimeout(() => {
+        showToast('MPD Veritabanı başarıyla güncellendi.');
+      }, 800);
+    }
     setTimeout(() => {
       setIsUpdatingDb(false);
-      showToast('MPD Veritabanı başarıyla güncellendi.');
-    }, 1200);
+    }, 1000);
+  };
+
+  const handleConfigChange = async (newConfig: MpdConfig) => {
+    setConfig(newConfig);
+    if (!newConfig.isDemoMode) {
+      await connectBridge(newConfig.host, newConfig.port, newConfig.password);
+    }
   };
 
   // --- Save Playlist ---
@@ -706,7 +783,7 @@ export default function App() {
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         config={config}
-        onSaveConfig={setConfig}
+        onSaveConfig={handleConfigChange}
       />
     </div>
   );
