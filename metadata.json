@@ -1,0 +1,6 @@
+{
+  "name": "FMPD - Catppuccin & Ghibli MPD Web Client",
+  "description": "Modern React and TypeScript web client for Music Player Daemon (MPD) featuring Catppuccin Mocha and Studio Ghibli aesthetics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
