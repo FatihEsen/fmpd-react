@@ -21,11 +21,14 @@ export function mpdBridgePlugin(): Plugin {
         process.env.MPD_PASSWORD
       );
 
+      let wssInstance: WebSocketServer | null = null;
+
       // Attach WebSocket server on the Vite HTTP server
       if (server.httpServer) {
         const wss = new WebSocketServer({
           noServer: true,
         });
+        wssInstance = wss;
 
         server.httpServer.on('upgrade', (request, socket, head) => {
           if (request.url === '/api/mpd-ws') {
@@ -96,6 +99,15 @@ export function mpdBridgePlugin(): Plugin {
           mpdBridge.disconnect();
           mpdBridge = new MpdBridgeClient(host || 'localhost', port || 6600, password);
           const connected = await mpdBridge.connect();
+          
+          if (wssInstance) {
+            wssInstance.clients.forEach((client) => {
+              if (client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify({ type: 'bridge_status', connected }));
+              }
+            });
+          }
+
           res.json({ success: connected, host, port });
         } catch (err: any) {
           res.status(500).json({ success: false, error: err.message });
@@ -152,10 +164,8 @@ export function mpdBridgePlugin(): Plugin {
         }
       });
 
-      // Silently attempt initial background connection only if MPD_HOST is explicitly configured
-      if (process.env.MPD_HOST) {
-        mpdBridge.connect().catch(() => {});
-      }
+      // Silently attempt initial background connection on server start
+      mpdBridge.connect().catch(() => {});
 
       // Mount the express router into Vite middlewares
       server.middlewares.use(app);

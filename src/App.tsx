@@ -13,7 +13,6 @@ import {
   LibraryFolder,
 } from './types';
 import { INITIAL_STREAMS } from './data/streams';
-import { GHIBLI_DEFAULT_SONGS, INITIAL_FOLDERS } from './data/ghibliLibrary';
 import { audioEngine } from './utils/audioEngine';
 import { AppHeader } from './components/AppHeader';
 import { NowPlayingCard } from './components/NowPlayingCard';
@@ -29,13 +28,21 @@ import { useMpdBridge } from './hooks/useMpdBridge';
 
 export default function App() {
   // --- State ---
-  const [queue, setQueue] = useState<Song[]>(GHIBLI_DEFAULT_SONGS);
+  const [queue, setQueue] = useState<Song[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [currentTab, setCurrentTab] = useState<TabType>('queue');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [currentPath, setCurrentPath] = useState<string>('');
-  const [folders, setFolders] = useState<Record<string, LibraryFolder>>(INITIAL_FOLDERS);
+  const [folders, setFolders] = useState<Record<string, LibraryFolder>>({
+    '': {
+      path: '',
+      name: 'Kütüphane Ana Dizini',
+      parentPath: null,
+      subFolders: [],
+      songs: [],
+    },
+  });
   const [streams, setStreams] = useState<StreamItem[]>(INITIAL_STREAMS);
 
   // Modals
@@ -50,12 +57,27 @@ export default function App() {
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [savedVolume, setSavedVolume] = useState<number>(85);
 
-  // Config
-  const [config, setConfig] = useState<MpdConfig>({
-    host: 'localhost',
-    port: 6600,
-    wsUrl: 'ws://localhost:8080/ws',
-    connected: false,
+  // Config with persistent localStorage retrieval
+  const [config, setConfig] = useState<MpdConfig>(() => {
+    try {
+      const saved = localStorage.getItem('fmpd_config');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          host: parsed.host || 'localhost',
+          port: parsed.port || 6600,
+          password: parsed.password || '',
+          wsUrl: parsed.wsUrl || '',
+          connected: false,
+        };
+      }
+    } catch {}
+    return {
+      host: 'localhost',
+      port: 6600,
+      wsUrl: '',
+      connected: false,
+    };
   });
 
   const currentSong = queue[currentIndex] || null;
@@ -63,17 +85,17 @@ export default function App() {
   const [status, setStatus] = useState<MpdStatus>({
     state: 'stop',
     songIndex: 0,
-    songId: GHIBLI_DEFAULT_SONGS[0]?.id || '',
+    songId: '',
     elapsed: 0,
-    duration: GHIBLI_DEFAULT_SONGS[0]?.duration || 189,
+    duration: 0,
     volume: 85,
     repeat: false,
     random: false,
     single: false,
     consume: false,
-    bitRate: '320 kbps',
-    audioFormat: '44.1kHz:24bit:2ch',
-    queueCount: GHIBLI_DEFAULT_SONGS.length,
+    bitRate: '',
+    audioFormat: '',
+    queueCount: 0,
   });
 
   // Show quick toast notification
@@ -767,6 +789,9 @@ export default function App() {
 
   const handleConfigChange = async (newConfig: MpdConfig) => {
     setConfig(newConfig);
+    try {
+      localStorage.setItem('fmpd_config', JSON.stringify(newConfig));
+    } catch {}
     await connectBridge(newConfig.host, newConfig.port, newConfig.password);
   };
 

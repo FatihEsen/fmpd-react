@@ -14,6 +14,7 @@ export function useMpdBridge(
   const [bridgeConnected, setBridgeConnected] = useState<boolean>(false);
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const initialConnectAttemptedRef = useRef<boolean>(false);
 
   // Send command to server bridge
   const sendMpdCommand = useCallback(async (command: string): Promise<string[] | null> => {
@@ -66,66 +67,111 @@ export function useMpdBridge(
   }, []);
 
   // Connect MPD host and port
-  const connectBridge = useCallback(async (host: string, port: number, password?: string) => {
-    setIsConnecting(true);
-    try {
-      const res = await fetch('/api/mpd/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port, password }),
-      });
-      const data = await res.json();
-      setIsConnecting(false);
-      if (data.success) {
-        setBridgeConnected(true);
-        showToast(`MPD bağlantısı başarılı: ${host}:${port}`);
-        return true;
-      } else {
+  const connectBridge = useCallback(
+    async (host: string, port: number, password?: string, silent = false) => {
+      setIsConnecting(true);
+      try {
+        const res = await fetch('/api/mpd/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host, port, password }),
+        });
+        const data = await res.json();
+        setIsConnecting(false);
+        if (data.success) {
+          setBridgeConnected(true);
+          if (!silent) {
+            showToast(`MPD bağlantısı başarılı: ${host}:${port}`);
+          }
+          return true;
+        } else {
+          setBridgeConnected(false);
+          if (!silent) {
+            showToast(`MPD bağlantı kurulamadı: ${data.error || 'Porta ulaşılamadı'}`);
+          }
+          return false;
+        }
+      } catch (err: any) {
+        setIsConnecting(false);
         setBridgeConnected(false);
-        showToast(`MPD bağlantı kurulamadı: ${data.error || 'Porta ulaşılamadı'}`);
+        if (!silent) {
+          showToast(`Bağlantı hatası: ${err.message}`);
+        }
         return false;
       }
-    } catch (err: any) {
-      setIsConnecting(false);
-      setBridgeConnected(false);
-      showToast(`Bağlantı hatası: ${err.message}`);
-      return false;
-    }
-  }, [showToast]);
+    },
+    [showToast]
+  );
 
-  // Connect WebSocket to /api/mpd-ws for real-time push events
+  // Auto-connect on startup with current config
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/mpd-ws`;
+    if (initialConnectAttemptedRef.current) return;
+    initialConnectAttemptedRef.current = true;
 
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      // WS opened
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'bridge_status') {
-          setBridgeConnected(msg.connected);
-        } else if (msg.type === 'status' && msg.data) {
-          if (onStatusUpdate) {
-            onStatusUpdate(msg.data, msg.data.currentTrack);
+    // Check status first
+    fetch('/api/mpd/status')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.connected) {
+          setBridgeConnected(true);
+          if (data.status && onStatusUpdate) {
+            onStatusUpdate(data.status, data.status.currentTrack);
           }
+        } else {
+          // Attempt automatic connection
+          connectBridge(config.host || 'localhost', config.port || 6600, config.password, true);
         }
-      } catch {
-        // Ignore parse error
-      }
+      })
+      .catch(() => {
+        // Retry connection
+        connectBridge(config.host || 'localhost', config.port || 6600, config.password, true);
+      });
+  }, [config.host, config.port, config.password, connectBridge, onStatusUpdate]);
+
+  // Connect WebSocket to /api/mpd-ws for real-time push events with auto-reconnect
+  useEffect(() => {
+    let isMounted = true;
+    let reconnectTimeout: NodeJS.Timeout | null = null;
+
+    const connectWs = () => {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/api/mpd-ws`;
+
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'bridge_status') {
+            setBridgeConnected(msg.connected);
+          } else if (msg.type === 'status' && msg.data) {
+            if (onStatusUpdate) {
+              onStatusUpdate(msg.data, msg.data.currentTrack);
+            }
+          }
+        } catch {
+          // Ignore parse error
+        }
+      };
+
+      ws.onclose = () => {
+        if (isMounted) {
+          reconnectTimeout = setTimeout(connectWs, 3000);
+        }
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
     };
 
-    ws.onclose = () => {
-      // WS closed
-    };
+    connectWs();
 
     return () => {
-      ws.close();
+      isMounted = false;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (wsRef.current) wsRef.current.close();
     };
   }, [onStatusUpdate]);
 

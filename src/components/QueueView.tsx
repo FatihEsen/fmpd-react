@@ -117,7 +117,7 @@ export const QueueView: React.FC<QueueViewProps> = ({
               Çalma sırası şu an boş
             </p>
             <p className="text-sm text-[#a6adc8] mt-1">
-              Müzik kütüphanesinden sevdiğiniz Ghibli parçalarını veya albümleri sıraya ekleyin.
+              MPD kütüphanenizden veya radyo akışlarından parçaları sıraya ekleyin.
             </p>
           </div>
           <button
