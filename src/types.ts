@@ -56,7 +56,6 @@ export interface MpdConfig {
   port: number;
   wsUrl: string;
   password?: string;
-  isDemoMode: boolean;
   connected: boolean;
 }
 

@@ -12,11 +12,7 @@ import {
   StreamItem,
   LibraryFolder,
 } from './types';
-import {
-  INITIAL_QUEUE_SONGS,
-  INITIAL_STREAMS,
-  MOCK_LIBRARY_FOLDERS,
-} from './data/ghibliTracks';
+import { INITIAL_STREAMS } from './data/streams';
 import { AppHeader } from './components/AppHeader';
 import { NowPlayingCard } from './components/NowPlayingCard';
 import { QueueView } from './components/QueueView';
@@ -31,13 +27,21 @@ import { useMpdBridge } from './hooks/useMpdBridge';
 
 export default function App() {
   // --- State ---
-  const [queue, setQueue] = useState<Song[]>(INITIAL_QUEUE_SONGS);
+  const [queue, setQueue] = useState<Song[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [currentTab, setCurrentTab] = useState<TabType>('queue');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [currentPath, setCurrentPath] = useState<string>('');
-  const [folders, setFolders] = useState(MOCK_LIBRARY_FOLDERS);
+  const [folders, setFolders] = useState<Record<string, LibraryFolder>>({
+    '': {
+      path: '',
+      name: 'Kütüphane Ana Dizini',
+      parentPath: null,
+      subFolders: [],
+      songs: [],
+    },
+  });
   const [streams, setStreams] = useState<StreamItem[]>(INITIAL_STREAMS);
 
   // Modals
@@ -57,26 +61,25 @@ export default function App() {
     host: 'localhost',
     port: 6600,
     wsUrl: 'ws://localhost:8080/ws',
-    isDemoMode: true,
-    connected: true,
+    connected: false,
   });
 
   const currentSong = queue[currentIndex] || null;
 
   const [status, setStatus] = useState<MpdStatus>({
-    state: 'play',
+    state: 'stop',
     songIndex: 0,
-    songId: currentSong?.id || 'track-1',
-    elapsed: 42,
-    duration: currentSong?.duration || 187,
+    songId: '',
+    elapsed: 0,
+    duration: 0,
     volume: 85,
     repeat: false,
     random: false,
     single: false,
     consume: false,
-    bitRate: '1411 kbps',
-    audioFormat: 'FLAC 24-bit / 96kHz',
-    queueCount: queue.length,
+    bitRate: '',
+    audioFormat: '',
+    queueCount: 0,
   });
 
   // Show quick toast notification
@@ -100,31 +103,28 @@ export default function App() {
 
   // Sync bridge state into config
   useEffect(() => {
-    if (!config.isDemoMode) {
-      setConfig((prev) => ({ ...prev, connected: bridgeConnected }));
-    }
-  }, [bridgeConnected, config.isDemoMode]);
+    setConfig((prev) => ({ ...prev, connected: bridgeConnected }));
+  }, [bridgeConnected]);
 
   // Sync queue from real MPD when connected
   useEffect(() => {
-    if (!config.isDemoMode && bridgeConnected) {
+    if (bridgeConnected) {
       fetchQueue().then((mpdQueue) => {
-        if (mpdQueue && mpdQueue.length > 0) {
+        if (mpdQueue) {
           setQueue(mpdQueue);
         }
       });
     }
-  }, [config.isDemoMode, bridgeConnected, fetchQueue]);
+  }, [bridgeConnected, fetchQueue]);
 
   // Load directory from real MPD when browsing library or when connected
   const loadMpdPath = useCallback(
     async (path: string) => {
-      if (config.isDemoMode || !bridgeConnected) return;
+      if (!bridgeConnected) return;
       const res = await fetchLibrary(path);
       if (res) {
         setFolders((prev) => {
           const next = { ...prev };
-          // Parent path
           let parentPath: string | null = null;
           if (path) {
             const parts = path.split('/');
@@ -143,16 +143,15 @@ export default function App() {
         });
       }
     },
-    [config.isDemoMode, bridgeConnected, fetchLibrary]
+    [bridgeConnected, fetchLibrary]
   );
 
   // When connecting to real MPD, load root library and all songs
   useEffect(() => {
-    if (!config.isDemoMode && bridgeConnected) {
+    if (bridgeConnected) {
       loadMpdPath('');
       fetchAllSongs().then((songs) => {
         if (songs && songs.length > 0) {
-          // If root folder is empty of songs, populate or store
           setFolders((prev) => {
             const next = { ...prev };
             if (!next['']) {
@@ -168,20 +167,18 @@ export default function App() {
           });
         }
       });
-    } else if (config.isDemoMode) {
-      setFolders(MOCK_LIBRARY_FOLDERS);
     }
-  }, [config.isDemoMode, bridgeConnected, loadMpdPath, fetchAllSongs]);
+  }, [bridgeConnected, loadMpdPath, fetchAllSongs]);
 
   // Handle navigate inside library tab
   const handleNavigateToPath = useCallback(
     (targetPath: string) => {
       setCurrentPath(targetPath);
-      if (!config.isDemoMode && bridgeConnected) {
+      if (bridgeConnected) {
         loadMpdPath(targetPath);
       }
     },
-    [config.isDemoMode, bridgeConnected, loadMpdPath]
+    [bridgeConnected, loadMpdPath]
   );
 
   // Collect all songs in the library for search
@@ -240,21 +237,21 @@ export default function App() {
   // --- Controls Handlers ---
   const handlePlay = () => {
     setStatus((prev) => ({ ...prev, state: 'play' }));
-    if (!config.isDemoMode && bridgeConnected) {
+    if (bridgeConnected) {
       sendMpdCommand('play');
     }
   };
 
   const handlePause = () => {
     setStatus((prev) => ({ ...prev, state: 'pause' }));
-    if (!config.isDemoMode && bridgeConnected) {
+    if (bridgeConnected) {
       sendMpdCommand('pause 1');
     }
   };
 
   const handleStop = () => {
     setStatus((prev) => ({ ...prev, state: 'stop', elapsed: 0 }));
-    if (!config.isDemoMode && bridgeConnected) {
+    if (bridgeConnected) {
       sendMpdCommand('stop');
     }
   };
@@ -262,7 +259,7 @@ export default function App() {
   const handleNext = () => {
     if (queue.length === 0) return;
 
-    if (!config.isDemoMode && bridgeConnected) {
+    if (bridgeConnected) {
       sendMpdCommand('next');
       return;
     }
@@ -288,7 +285,7 @@ export default function App() {
   const handlePrev = () => {
     if (queue.length === 0) return;
 
-    if (!config.isDemoMode && bridgeConnected) {
+    if (bridgeConnected) {
       sendMpdCommand('previous');
       return;
     }
@@ -309,7 +306,7 @@ export default function App() {
 
   const handleSeek = (seconds: number) => {
     setStatus((prev) => ({ ...prev, elapsed: Math.max(0, Math.floor(seconds)) }));
-    if (!config.isDemoMode && bridgeConnected && currentSong) {
+    if (bridgeConnected && currentSong) {
       sendMpdCommand(`seekcur ${Math.max(0, Math.floor(seconds))}`);
     }
   };
@@ -317,7 +314,7 @@ export default function App() {
   const handleToggleRandom = () => {
     setStatus((prev) => {
       const next = !prev.random;
-      if (!config.isDemoMode && bridgeConnected) {
+      if (bridgeConnected) {
         sendMpdCommand(`random ${next ? 1 : 0}`);
       }
       showToast(next ? 'Rastgele Çalma Açık' : 'Rastgele Çalma Kapalı');
@@ -328,7 +325,7 @@ export default function App() {
   const handleToggleRepeat = () => {
     setStatus((prev) => {
       const next = !prev.repeat;
-      if (!config.isDemoMode && bridgeConnected) {
+      if (bridgeConnected) {
         sendMpdCommand(`repeat ${next ? 1 : 0}`);
       }
       showToast(next ? 'Tekrar Modu Açık' : 'Tekrar Modu Kapalı');
@@ -339,7 +336,7 @@ export default function App() {
   const handleToggleSingle = () => {
     setStatus((prev) => {
       const next = !prev.single;
-      if (!config.isDemoMode && bridgeConnected) {
+      if (bridgeConnected) {
         sendMpdCommand(`single ${next ? 1 : 0}`);
       }
       showToast(next ? 'Tek Şarkı Modu Açık' : 'Tek Şarkı Modu Kapalı');
@@ -350,7 +347,7 @@ export default function App() {
   const handleToggleConsume = () => {
     setStatus((prev) => {
       const next = !prev.consume;
-      if (!config.isDemoMode && bridgeConnected) {
+      if (bridgeConnected) {
         sendMpdCommand(`consume ${next ? 1 : 0}`);
       }
       showToast(next ? 'Tüketim Modu (Consume) Açık' : 'Tüketim Modu Kapalı');
@@ -535,7 +532,7 @@ export default function App() {
 
   // --- Library Actions ---
   const handleAddSongToQueue = async (song: Song) => {
-    if (!config.isDemoMode && bridgeConnected) {
+    if (bridgeConnected) {
       if (song.file) {
         await sendMpdCommand(`add "${song.file.replace(/"/g, '\\"')}"`);
         const updatedQueue = await fetchQueue();
@@ -549,7 +546,7 @@ export default function App() {
   };
 
   const handlePlaySongNow = async (song: Song) => {
-    if (!config.isDemoMode && bridgeConnected) {
+    if (bridgeConnected) {
       if (song.file) {
         await sendMpdCommand(`add "${song.file.replace(/"/g, '\\"')}"`);
         const updatedQueue = await fetchQueue();
@@ -573,7 +570,7 @@ export default function App() {
   };
 
   const handleAddAllToQueue = async (songsToAdd: Song[]) => {
-    if (!config.isDemoMode && bridgeConnected) {
+    if (bridgeConnected) {
       for (const s of songsToAdd) {
         if (s.file) {
           await sendMpdCommand(`add "${s.file.replace(/"/g, '\\"')}"`);
@@ -589,6 +586,20 @@ export default function App() {
       setQueue((prev) => [...prev, ...newSongs]);
     }
     showToast(`${songsToAdd.length} parça kuyruğa eklendi.`);
+  };
+
+  // Add an entire folder to queue directly in MPD
+  const handleAddFolderToQueue = async (folderPath: string) => {
+    const folderName = folderPath.split('/').pop() || folderPath;
+    if (bridgeConnected) {
+      // In MPD, add "<path>" adds all files recursively inside that folder!
+      const res = await sendMpdCommand(`add "${folderPath.replace(/"/g, '\\"')}"`);
+      const updatedQueue = await fetchQueue();
+      if (updatedQueue) setQueue(updatedQueue);
+      showToast(`"${folderName}" klasörü sıraya eklendi.`);
+    } else {
+      showToast(`MPD bağlantısı yok.`);
+    }
   };
 
   // --- Streams Actions ---
@@ -632,16 +643,14 @@ export default function App() {
     showToast('Akış silindi.');
   };
 
-  // --- Database Update simulation / bridge ---
+  // --- Database Update ---
   const handleUpdateDb = async () => {
     setIsUpdatingDb(true);
-    if (!config.isDemoMode && bridgeConnected) {
+    if (bridgeConnected) {
       await sendMpdCommand('update');
       showToast('MPD "update" komutu gönderildi.');
     } else {
-      setTimeout(() => {
-        showToast('MPD Veritabanı başarıyla güncellendi.');
-      }, 800);
+      showToast('MPD bağlantısı bulunamadı.');
     }
     setTimeout(() => {
       setIsUpdatingDb(false);
@@ -650,9 +659,7 @@ export default function App() {
 
   const handleConfigChange = async (newConfig: MpdConfig) => {
     setConfig(newConfig);
-    if (!newConfig.isDemoMode) {
-      await connectBridge(newConfig.host, newConfig.port, newConfig.password);
-    }
+    await connectBridge(newConfig.host, newConfig.port, newConfig.password);
   };
 
   // --- Save Playlist ---
@@ -829,6 +836,7 @@ export default function App() {
             onAddSongToQueue={handleAddSongToQueue}
             onPlaySongNow={handlePlaySongNow}
             onAddAllToQueue={handleAddAllToQueue}
+            onAddFolderToQueue={handleAddFolderToQueue}
           />
         )}
 

@@ -10,7 +10,7 @@ import {
   Search, 
   Waves,
   Wifi,
-  Sparkles
+  WifiOff
 } from 'lucide-react';
 
 interface AppHeaderProps {
@@ -126,18 +126,18 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
           {/* Status Badge */}
           <div
             onClick={onOpenSettings}
-            title={config.isDemoMode ? 'Simülasyon Modu (Tıklayarak MPD Sunucusu Bağlayın)' : 'MPD Sunucusuna Bağlı'}
+            title={config.connected ? 'MPD Sunucusuna Bağlı' : 'MPD Bağlantısı Kesik (Ayarları Aç)'}
             className="hidden lg:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-[#313244] bg-[#1e1e2e] cursor-pointer hover:border-[#45475a] transition-all"
           >
-            {config.isDemoMode ? (
-              <>
-                <Sparkles className="w-3.5 h-3.5 text-[#f9e2af]" />
-                <span className="text-[#a6adc8]">Simülasyon</span>
-              </>
-            ) : (
+            {config.connected ? (
               <>
                 <Wifi className="w-3.5 h-3.5 text-[#a6e3a1]" />
                 <span className="text-[#a6e3a1] font-mono">{config.host}:{config.port}</span>
+              </>
+            ) : (
+              <>
+                <WifiOff className="w-3.5 h-3.5 text-[#f38ba8]" />
+                <span className="text-[#f38ba8] font-mono">{config.host}:{config.port} (Bağlantı Yok)</span>
               </>
             )}
           </div>

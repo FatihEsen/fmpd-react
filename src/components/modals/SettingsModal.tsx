@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Settings, Server, Sparkles, Check, Info } from 'lucide-react';
+import { X, Settings, Server, Check, Info } from 'lucide-react';
 import { MpdConfig } from '../../types';
 
 interface SettingsModalProps {
@@ -19,7 +19,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [port, setPort] = useState(config.port.toString());
   const [password, setPassword] = useState(config.password || '');
   const [wsUrl, setWsUrl] = useState(config.wsUrl || 'ws://localhost:8080/ws');
-  const [isDemoMode, setIsDemoMode] = useState(config.isDemoMode);
   const [saved, setSaved] = useState(false);
 
   if (!isOpen) return null;
@@ -31,8 +30,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       port: parseInt(port, 10) || 6600,
       password: password.trim(),
       wsUrl: wsUrl.trim(),
-      isDemoMode,
-      connected: !isDemoMode,
+      connected: true,
     });
     setSaved(true);
     setTimeout(() => {
@@ -47,7 +45,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         <div className="flex items-center justify-between border-b border-[#313244] pb-3">
           <div className="flex items-center gap-2 text-[#cdd6f4]">
             <Settings className="w-5 h-5 text-[#fab387]" />
-            <h3 className="font-bold text-lg">Ayarlar & MPD Sunucu Bağlantısı</h3>
+            <h3 className="font-bold text-lg">MPD Sunucu Bağlantı Ayarları</h3>
           </div>
           <button
             type="button"
@@ -65,45 +63,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-            {/* Mode selection toggle */}
-            <div className="bg-[#181825] p-3 rounded-xl border border-[#313244] flex flex-col gap-2">
-              <span className="text-xs font-semibold text-[#a6adc8]">Çalışma Modu</span>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsDemoMode(true)}
-                  className={`flex items-center justify-center gap-2 p-2.5 rounded-lg text-xs font-bold transition-all ${
-                    isDemoMode
-                      ? 'bg-[#fab387] text-[#11111b] shadow-sm'
-                      : 'bg-[#313244] text-[#a6adc8] hover:text-[#cdd6f4]'
-                  }`}
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span>Simülasyon (Demo)</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setIsDemoMode(false)}
-                  className={`flex items-center justify-center gap-2 p-2.5 rounded-lg text-xs font-bold transition-all ${
-                    !isDemoMode
-                      ? 'bg-[#fab387] text-[#11111b] shadow-sm'
-                      : 'bg-[#313244] text-[#a6adc8] hover:text-[#cdd6f4]'
-                  }`}
-                >
-                  <Server className="w-4 h-4" />
-                  <span>Canlı MPD Sunucusu</span>
-                </button>
-              </div>
-              <p className="text-[11px] text-[#6c7086] mt-1">
-                {isDemoMode
-                  ? 'Ghibli albümleri ve parçalarıyla arayüzü tam işlevsellikle test edebilirsiniz.'
-                  : 'Kendi yerel veya uzaktaki Music Player Daemon (MPD) sunucunuza bağlanır.'}
-              </p>
-            </div>
-
             {/* Server details */}
-            <div className={`flex flex-col gap-3 transition-opacity ${isDemoMode ? 'opacity-50 pointer-events-none' : ''}`}>
+            <div className="flex flex-col gap-3">
               <div className="grid grid-cols-3 gap-3">
                 <div className="col-span-2">
                   <label className="block text-xs font-semibold text-[#a6adc8] mb-1">
@@ -146,9 +107,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
 
               <div className="p-2.5 rounded-xl bg-[#11111b] border border-[#313244] text-[11px] text-[#a6adc8] flex flex-col gap-1">
-                <span className="text-[#fab387] font-bold">⚡ Dahili Express & WebSocket Köprüsü Aktif</span>
+                <span className="text-[#fab387] font-bold">⚡ Dahili MPD Köprüsü</span>
                 <span>
-                  Sunucu tarafında entegre edilen TCP köprüsü doğrudan MPD soketinizle (<code className="text-[#89b4fa]">host:port</code>) iletişim kurar. Yerel ortamınızda veya tünelle bağlandığınızda MPD komutları anlık iletilir.
+                  Doğrudan bilgisayarınızdaki veya uzak sunucunuzdaki Music Player Daemon (MPD) servisine (<code className="text-[#89b4fa]">{host}:{port}</code>) bağlanır.
                 </span>
               </div>
             </div>
@@ -157,9 +118,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div className="p-2.5 rounded-xl bg-[#181825]/50 border border-[#313244] flex items-start gap-2 text-xs text-[#a6adc8]">
               <Info className="w-4 h-4 text-[#89b4fa] shrink-0 mt-0.5" />
               <div>
-                <strong className="text-[#cdd6f4]">FMPD React Modernizasyonu:</strong>
+                <strong className="text-[#cdd6f4]">FMPD React Client:</strong>
                 <p className="text-[11px] text-[#6c7086] mt-0.5">
-                  Catppuccin Mocha renk paleti ve Studio Ghibli teması React 19 ve Tailwind altyapısına başarıyla dönüştürüldü.
+                  Catppuccin Mocha renk paleti ve modern React & Tailwind arayüzü ile yerel MPD müzik kütüphanenizi yönetin.
                 </p>
               </div>
             </div>

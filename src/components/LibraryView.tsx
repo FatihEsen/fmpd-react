@@ -22,6 +22,7 @@ interface LibraryViewProps {
   onAddSongToQueue: (song: Song) => void;
   onPlaySongNow: (song: Song) => void;
   onAddAllToQueue: (songs: Song[]) => void;
+  onAddFolderToQueue: (folderPath: string) => void;
 }
 
 export const LibraryView: React.FC<LibraryViewProps> = ({
@@ -33,6 +34,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   onAddSongToQueue,
   onPlaySongNow,
   onAddAllToQueue,
+  onAddFolderToQueue,
 }) => {
   const currentFolder = folders[currentPath] || folders[''] || {
     path: currentPath,
@@ -189,10 +191,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     return (
                       <div
                         key={subPath}
-                        onClick={() => onNavigateTo(subPath)}
-                        className="p-3.5 rounded-xl bg-[#181825] hover:bg-[#313244] border border-[#313244] hover:border-[#fab387]/40 cursor-pointer flex items-center justify-between gap-3 group transition-all"
+                        className="p-3.5 rounded-xl bg-[#181825] hover:bg-[#313244] border border-[#313244] hover:border-[#fab387]/40 flex items-center justify-between gap-3 group transition-all"
                       >
-                        <div className="flex items-center gap-3 min-w-0">
+                        <div
+                          onClick={() => onNavigateTo(subPath)}
+                          className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
+                        >
                           <div className="p-2 rounded-lg bg-[#fab387]/10 text-[#fab387] group-hover:bg-[#fab387] group-hover:text-[#11111b] transition-colors">
                             <Folder className="w-5 h-5 fill-current" />
                           </div>
@@ -200,9 +204,29 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                             {folderName}
                           </span>
                         </div>
-                        <span className="text-xs text-[#6c7086] group-hover:text-[#a6adc8]">
-                          ›
-                        </span>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onAddFolderToQueue(subPath);
+                            }}
+                            title={`"${folderName}" klasörünü sıraya ekle`}
+                            className="p-1.5 rounded-lg bg-[#313244] hover:bg-[#fab387] text-[#cdd6f4] hover:text-[#11111b] transition-all flex items-center gap-1 text-xs font-semibold"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline text-[11px]">Sıraya Ekle</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onNavigateTo(subPath)}
+                            title="Klasöre Git"
+                            className="p-1.5 rounded-lg text-[#6c7086] hover:text-[#cdd6f4] transition-colors"
+                          >
+                            ›
+                          </button>
+                        </div>
                       </div>
                     );
                   })}

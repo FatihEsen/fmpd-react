@@ -91,14 +91,6 @@ export function useMpdBridge(config: MpdConfig, showToast: (msg: string) => void
 
   // Connect WebSocket to /api/mpd-ws for real-time push events
   useEffect(() => {
-    if (config.isDemoMode) {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-      return;
-    }
-
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/api/mpd-ws`;
 
@@ -127,7 +119,7 @@ export function useMpdBridge(config: MpdConfig, showToast: (msg: string) => void
     return () => {
       ws.close();
     };
-  }, [config.isDemoMode]);
+  }, []);
 
   return {
     bridgeConnected,
