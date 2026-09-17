@@ -34,7 +34,13 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   onPlaySongNow,
   onAddAllToQueue,
 }) => {
-  const currentFolder = folders[currentPath] || folders[''];
+  const currentFolder = folders[currentPath] || folders[''] || {
+    path: currentPath,
+    name: currentPath ? currentPath.split('/').pop() || currentPath : 'Kütüphane Ana Dizini',
+    parentPath: currentPath ? currentPath.split('/').slice(0, -1).join('/') : null,
+    subFolders: [],
+    songs: [],
+  };
 
   // Breadcrumbs calculation
   const pathParts = currentPath ? currentPath.split('/') : [];

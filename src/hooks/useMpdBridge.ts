@@ -50,6 +50,17 @@ export function useMpdBridge(config: MpdConfig, showToast: (msg: string) => void
     }
   }, []);
 
+  // Fetch all songs from MPD database
+  const fetchAllSongs = useCallback(async (): Promise<Song[]> => {
+    try {
+      const res = await fetch('/api/mpd/all-songs');
+      const data = await res.json();
+      return data.songs || [];
+    } catch {
+      return [];
+    }
+  }, []);
+
   // Connect MPD host and port
   const connectBridge = useCallback(async (host: string, port: number, password?: string) => {
     setIsConnecting(true);
@@ -125,5 +136,6 @@ export function useMpdBridge(config: MpdConfig, showToast: (msg: string) => void
     sendMpdCommand,
     fetchQueue,
     fetchLibrary,
+    fetchAllSongs,
   };
 }

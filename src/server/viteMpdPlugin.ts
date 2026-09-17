@@ -140,6 +140,18 @@ export function mpdBridgePlugin(): Plugin {
         }
       });
 
+      app.get('/api/mpd/all-songs', async (req, res) => {
+        try {
+          if (!mpdBridge.getConnected()) {
+            return res.json({ songs: [] });
+          }
+          const songs = await mpdBridge.getAllSongs();
+          res.json({ songs });
+        } catch (err: any) {
+          res.status(500).json({ error: err.message });
+        }
+      });
+
       // Silently attempt initial background connection only if MPD_HOST is explicitly configured
       if (process.env.MPD_HOST) {
         mpdBridge.connect().catch(() => {});

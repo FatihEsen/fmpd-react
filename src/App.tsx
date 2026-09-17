@@ -95,6 +95,7 @@ export default function App() {
     sendMpdCommand,
     fetchQueue,
     fetchLibrary,
+    fetchAllSongs,
   } = useMpdBridge(config, showToast);
 
   // Sync bridge state into config
@@ -114,6 +115,74 @@ export default function App() {
       });
     }
   }, [config.isDemoMode, bridgeConnected, fetchQueue]);
+
+  // Load directory from real MPD when browsing library or when connected
+  const loadMpdPath = useCallback(
+    async (path: string) => {
+      if (config.isDemoMode || !bridgeConnected) return;
+      const res = await fetchLibrary(path);
+      if (res) {
+        setFolders((prev) => {
+          const next = { ...prev };
+          // Parent path
+          let parentPath: string | null = null;
+          if (path) {
+            const parts = path.split('/');
+            parts.pop();
+            parentPath = parts.join('/');
+          }
+
+          next[path] = {
+            path,
+            name: path ? path.split('/').pop() || path : 'Kütüphane Ana Dizini',
+            parentPath,
+            subFolders: res.folders || [],
+            songs: res.songs || [],
+          };
+          return next;
+        });
+      }
+    },
+    [config.isDemoMode, bridgeConnected, fetchLibrary]
+  );
+
+  // When connecting to real MPD, load root library and all songs
+  useEffect(() => {
+    if (!config.isDemoMode && bridgeConnected) {
+      loadMpdPath('');
+      fetchAllSongs().then((songs) => {
+        if (songs && songs.length > 0) {
+          // If root folder is empty of songs, populate or store
+          setFolders((prev) => {
+            const next = { ...prev };
+            if (!next['']) {
+              next[''] = {
+                path: '',
+                name: 'Kütüphane Ana Dizini',
+                parentPath: null,
+                subFolders: [],
+                songs: [],
+              };
+            }
+            return next;
+          });
+        }
+      });
+    } else if (config.isDemoMode) {
+      setFolders(MOCK_LIBRARY_FOLDERS);
+    }
+  }, [config.isDemoMode, bridgeConnected, loadMpdPath, fetchAllSongs]);
+
+  // Handle navigate inside library tab
+  const handleNavigateToPath = useCallback(
+    (targetPath: string) => {
+      setCurrentPath(targetPath);
+      if (!config.isDemoMode && bridgeConnected) {
+        loadMpdPath(targetPath);
+      }
+    },
+    [config.isDemoMode, bridgeConnected, loadMpdPath]
+  );
 
   // Collect all songs in the library for search
   const allLibrarySongs = React.useMemo(() => {
@@ -465,30 +534,61 @@ export default function App() {
   };
 
   // --- Library Actions ---
-  const handleAddSongToQueue = (song: Song) => {
-    const newSong = { ...song, id: `queue-${Date.now()}-${Math.random().toString(36).substring(2, 6)}` };
-    setQueue((prev) => [...prev, newSong]);
+  const handleAddSongToQueue = async (song: Song) => {
+    if (!config.isDemoMode && bridgeConnected) {
+      if (song.file) {
+        await sendMpdCommand(`add "${song.file.replace(/"/g, '\\"')}"`);
+        const updatedQueue = await fetchQueue();
+        if (updatedQueue) setQueue(updatedQueue);
+      }
+    } else {
+      const newSong = { ...song, id: `queue-${Date.now()}-${Math.random().toString(36).substring(2, 6)}` };
+      setQueue((prev) => [...prev, newSong]);
+    }
     showToast(`"${song.title}" kuyruğa eklendi.`);
   };
 
-  const handlePlaySongNow = (song: Song) => {
-    const newSong = { ...song, id: `queue-${Date.now()}-${Math.random().toString(36).substring(2, 6)}` };
-    setQueue((prev) => {
-      const next = [...prev];
-      next.splice(currentIndex + 1, 0, newSong);
-      return next;
-    });
-    setCurrentIndex((prev) => prev + 1);
-    setStatus((prev) => ({ ...prev, elapsed: 0, state: 'play' }));
+  const handlePlaySongNow = async (song: Song) => {
+    if (!config.isDemoMode && bridgeConnected) {
+      if (song.file) {
+        await sendMpdCommand(`add "${song.file.replace(/"/g, '\\"')}"`);
+        const updatedQueue = await fetchQueue();
+        if (updatedQueue) {
+          setQueue(updatedQueue);
+          const lastIdx = updatedQueue.length - 1;
+          await sendMpdCommand(`play ${lastIdx}`);
+        }
+      }
+    } else {
+      const newSong = { ...song, id: `queue-${Date.now()}-${Math.random().toString(36).substring(2, 6)}` };
+      setQueue((prev) => {
+        const next = [...prev];
+        next.splice(currentIndex + 1, 0, newSong);
+        return next;
+      });
+      setCurrentIndex((prev) => prev + 1);
+      setStatus((prev) => ({ ...prev, elapsed: 0, state: 'play' }));
+    }
+    showToast(`"${song.title}" çalınıyor.`);
   };
 
-  const handleAddAllToQueue = (songsToAdd: Song[]) => {
-    const newSongs = songsToAdd.map((s) => ({
-      ...s,
-      id: `queue-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-    }));
-    setQueue((prev) => [...prev, ...newSongs]);
-    showToast(`${newSongs.length} parça kuyruğa eklendi.`);
+  const handleAddAllToQueue = async (songsToAdd: Song[]) => {
+    if (!config.isDemoMode && bridgeConnected) {
+      for (const s of songsToAdd) {
+        if (s.file) {
+          await sendMpdCommand(`add "${s.file.replace(/"/g, '\\"')}"`);
+        }
+      }
+      const updatedQueue = await fetchQueue();
+      if (updatedQueue) setQueue(updatedQueue);
+    } else {
+      const newSongs = songsToAdd.map((s) => ({
+        ...s,
+        id: `queue-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      }));
+      setQueue((prev) => [...prev, ...newSongs]);
+    }
+    showToast(`${songsToAdd.length} parça kuyruğa eklendi.`);
   };
 
   // --- Streams Actions ---
@@ -725,7 +825,7 @@ export default function App() {
             folders={folders}
             searchQuery={searchQuery}
             allSongs={allLibrarySongs}
-            onNavigateTo={setCurrentPath}
+            onNavigateTo={handleNavigateToPath}
             onAddSongToQueue={handleAddSongToQueue}
             onPlaySongNow={handlePlaySongNow}
             onAddAllToQueue={handleAddAllToQueue}

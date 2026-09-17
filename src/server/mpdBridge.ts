@@ -255,25 +255,36 @@ export class MpdBridgeClient extends EventEmitter {
   }
 
   public async getLibrary(path = '') {
-    const cmd = path ? `lsinfo "${path}"` : 'lsinfo';
-    const lines = await this.sendCommand(cmd);
+    // MPD commands: lsinfo or listfiles
+    const safePath = path ? `"${path.replace(/"/g, '\\"')}"` : '""';
+    let lines: string[] = [];
+    try {
+      lines = await this.sendCommand(path ? `lsinfo ${safePath}` : 'lsinfo');
+    } catch {
+      try {
+        lines = await this.sendCommand(path ? `listfiles ${safePath}` : 'listfiles');
+      } catch {
+        lines = [];
+      }
+    }
+
     const folders: string[] = [];
     const songs: any[] = [];
     let curObj: Record<string, string> = {};
 
     for (const line of lines) {
       if (line.startsWith('directory: ')) {
-        folders.push(line.replace('directory: ', ''));
+        folders.push(line.replace('directory: ', '').trim());
       } else if (line.startsWith('file: ')) {
         if (curObj['file']) {
           songs.push(this.formatSongObject(curObj));
           curObj = {};
         }
-        curObj['file'] = line.replace('file: ', '');
+        curObj['file'] = line.replace('file: ', '').trim();
       } else {
         const idx = line.indexOf(': ');
         if (idx !== -1) {
-          curObj[line.slice(0, idx)] = line.slice(idx + 2);
+          curObj[line.slice(0, idx)] = line.slice(idx + 2).trim();
         }
       }
     }
@@ -282,6 +293,21 @@ export class MpdBridgeClient extends EventEmitter {
     }
 
     return { folders, songs };
+  }
+
+  public async getAllSongs(): Promise<any[]> {
+    // Fetch all files from MPD database
+    try {
+      const lines = await this.sendCommand('listallinfo');
+      return this.parseSongsList(lines);
+    } catch {
+      try {
+        const lines = await this.sendCommand('search "" ""');
+        return this.parseSongsList(lines);
+      } catch {
+        return [];
+      }
+    }
   }
 
   private parseSong(lines: string[]) {

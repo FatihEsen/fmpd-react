@@ -138,6 +138,18 @@ async function startServer() {
     }
   });
 
+  app.get('/api/mpd/all-songs', async (req, res) => {
+    try {
+      if (!mpdBridge.getConnected()) {
+        return res.json({ songs: [] });
+      }
+      const songs = await mpdBridge.getAllSongs();
+      res.json({ songs });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Attempt initial background connection (silent if localhost:6600 is not running yet)
   mpdBridge.connect().catch(() => {});
 
