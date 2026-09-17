@@ -13,6 +13,8 @@ import {
   LibraryFolder,
 } from './types';
 import { INITIAL_STREAMS } from './data/streams';
+import { GHIBLI_DEFAULT_SONGS, INITIAL_FOLDERS } from './data/ghibliLibrary';
+import { audioEngine } from './utils/audioEngine';
 import { AppHeader } from './components/AppHeader';
 import { NowPlayingCard } from './components/NowPlayingCard';
 import { QueueView } from './components/QueueView';
@@ -27,21 +29,13 @@ import { useMpdBridge } from './hooks/useMpdBridge';
 
 export default function App() {
   // --- State ---
-  const [queue, setQueue] = useState<Song[]>([]);
+  const [queue, setQueue] = useState<Song[]>(GHIBLI_DEFAULT_SONGS);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [currentTab, setCurrentTab] = useState<TabType>('queue');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [currentPath, setCurrentPath] = useState<string>('');
-  const [folders, setFolders] = useState<Record<string, LibraryFolder>>({
-    '': {
-      path: '',
-      name: 'Kütüphane Ana Dizini',
-      parentPath: null,
-      subFolders: [],
-      songs: [],
-    },
-  });
+  const [folders, setFolders] = useState<Record<string, LibraryFolder>>(INITIAL_FOLDERS);
   const [streams, setStreams] = useState<StreamItem[]>(INITIAL_STREAMS);
 
   // Modals
@@ -69,17 +63,17 @@ export default function App() {
   const [status, setStatus] = useState<MpdStatus>({
     state: 'stop',
     songIndex: 0,
-    songId: '',
+    songId: GHIBLI_DEFAULT_SONGS[0]?.id || '',
     elapsed: 0,
-    duration: 0,
+    duration: GHIBLI_DEFAULT_SONGS[0]?.duration || 189,
     volume: 85,
     repeat: false,
     random: false,
     single: false,
     consume: false,
-    bitRate: '',
-    audioFormat: '',
-    queueCount: 0,
+    bitRate: '320 kbps',
+    audioFormat: '44.1kHz:24bit:2ch',
+    queueCount: GHIBLI_DEFAULT_SONGS.length,
   });
 
   // Show quick toast notification
@@ -90,6 +84,22 @@ export default function App() {
     }, 2800);
   }, []);
 
+  // Handle live status updates pushed from MPD
+  const handleMpdStatusUpdate = useCallback(
+    (mpdStatus: Partial<MpdStatus>, currentTrack?: any) => {
+      setStatus((prev) => ({
+        ...prev,
+        ...mpdStatus,
+        duration: mpdStatus.duration || (currentTrack?.duration ? parseInt(currentTrack.duration, 10) : prev.duration),
+      }));
+
+      if (mpdStatus.songIndex !== undefined && mpdStatus.songIndex >= 0) {
+        setCurrentIndex(mpdStatus.songIndex);
+      }
+    },
+    []
+  );
+
   // Native MPD Bridge integration hook
   const {
     bridgeConnected,
@@ -99,7 +109,7 @@ export default function App() {
     fetchQueue,
     fetchLibrary,
     fetchAllSongs,
-  } = useMpdBridge(config, showToast);
+  } = useMpdBridge(config, showToast, handleMpdStatusUpdate);
 
   // Sync bridge state into config
   useEffect(() => {
@@ -235,79 +245,124 @@ export default function App() {
   }, [currentSong, queue.length]);
 
   // --- Controls Handlers ---
-  const handlePlay = () => {
+  const handlePlay = useCallback(() => {
+    if (queue.length === 0) return;
+    const song = queue[currentIndex];
     setStatus((prev) => ({ ...prev, state: 'play' }));
+    if (song) {
+      audioEngine.play(song, status.elapsed);
+    }
     if (bridgeConnected) {
       sendMpdCommand('play');
     }
-  };
+  }, [queue, currentIndex, status.elapsed, bridgeConnected, sendMpdCommand]);
 
-  const handlePause = () => {
+  const handlePause = useCallback(() => {
     setStatus((prev) => ({ ...prev, state: 'pause' }));
+    audioEngine.pause();
     if (bridgeConnected) {
       sendMpdCommand('pause 1');
     }
-  };
+  }, [bridgeConnected, sendMpdCommand]);
 
-  const handleStop = () => {
+  const handleStop = useCallback(() => {
     setStatus((prev) => ({ ...prev, state: 'stop', elapsed: 0 }));
+    audioEngine.stop();
     if (bridgeConnected) {
       sendMpdCommand('stop');
     }
-  };
+  }, [bridgeConnected, sendMpdCommand]);
 
-  const handleNext = () => {
+  const handleNext = useCallback(() => {
     if (queue.length === 0) return;
+
+    let nextIdx = currentIndex + 1;
+    if (status.random) {
+      nextIdx = Math.floor(Math.random() * queue.length);
+    } else if (nextIdx >= queue.length) {
+      if (status.repeat) {
+        nextIdx = 0;
+      } else {
+        handleStop();
+        return;
+      }
+    }
+
+    const nextSong = queue[nextIdx];
+    setCurrentIndex(nextIdx);
+    setStatus((prev) => ({
+      ...prev,
+      elapsed: 0,
+      state: 'play',
+      songIndex: nextIdx,
+      songId: nextSong ? nextSong.id : '',
+      duration: nextSong ? nextSong.duration : 0,
+    }));
+
+    if (nextSong) {
+      audioEngine.play(nextSong, 0);
+    }
 
     if (bridgeConnected) {
       sendMpdCommand('next');
-      return;
     }
+  }, [queue, currentIndex, status.random, status.repeat, handleStop, bridgeConnected, sendMpdCommand]);
 
-    if (status.random) {
-      const randIndex = Math.floor(Math.random() * queue.length);
-      setCurrentIndex(randIndex);
-      setStatus((prev) => ({ ...prev, elapsed: 0, state: 'play' }));
-      return;
-    }
-
-    if (currentIndex < queue.length - 1) {
-      setCurrentIndex((prev) => prev + 1);
-      setStatus((prev) => ({ ...prev, elapsed: 0, state: 'play' }));
-    } else if (status.repeat) {
-      setCurrentIndex(0);
-      setStatus((prev) => ({ ...prev, elapsed: 0, state: 'play' }));
-    } else {
-      setStatus((prev) => ({ ...prev, state: 'stop', elapsed: 0 }));
-    }
-  };
-
-  const handlePrev = () => {
+  const handlePrev = useCallback(() => {
     if (queue.length === 0) return;
-
-    if (bridgeConnected) {
-      sendMpdCommand('previous');
-      return;
-    }
 
     // If more than 3 seconds in, restart track
     if (status.elapsed > 3) {
       setStatus((prev) => ({ ...prev, elapsed: 0 }));
+      if (currentSong && status.state === 'play') {
+        audioEngine.play(currentSong, 0);
+      }
+      if (bridgeConnected && currentSong) {
+        sendMpdCommand('seekcur 0');
+      }
       return;
     }
 
-    if (currentIndex > 0) {
-      setCurrentIndex((prev) => prev - 1);
-      setStatus((prev) => ({ ...prev, elapsed: 0, state: 'play' }));
-    } else {
-      setStatus((prev) => ({ ...prev, elapsed: 0 }));
+    let prevIdx = currentIndex - 1;
+    if (prevIdx < 0) {
+      prevIdx = status.repeat ? queue.length - 1 : 0;
     }
-  };
+
+    const prevSong = queue[prevIdx];
+    setCurrentIndex(prevIdx);
+    setStatus((prev) => ({
+      ...prev,
+      elapsed: 0,
+      state: 'play',
+      songIndex: prevIdx,
+      songId: prevSong ? prevSong.id : '',
+      duration: prevSong ? prevSong.duration : 0,
+    }));
+
+    if (prevSong) {
+      audioEngine.play(prevSong, 0);
+    }
+
+    if (bridgeConnected) {
+      sendMpdCommand('previous');
+    }
+  }, [queue, currentIndex, status.elapsed, status.repeat, status.state, currentSong, bridgeConnected, sendMpdCommand]);
+
+  // Audio Engine end of track trigger
+  useEffect(() => {
+    audioEngine.setEndCallback(() => {
+      handleNext();
+    });
+  }, [handleNext]);
 
   const handleSeek = (seconds: number) => {
-    setStatus((prev) => ({ ...prev, elapsed: Math.max(0, Math.floor(seconds)) }));
+    const sec = Math.max(0, Math.floor(seconds));
+    setStatus((prev) => ({ ...prev, elapsed: sec }));
+    if (currentSong && status.state === 'play') {
+      audioEngine.play(currentSong, sec);
+    }
     if (bridgeConnected && currentSong) {
-      sendMpdCommand(`seekcur ${Math.max(0, Math.floor(seconds))}`);
+      sendMpdCommand(`seekcur ${sec}`);
     }
   };
 
@@ -364,21 +419,34 @@ export default function App() {
   const handleVolumeChange = (vol: number) => {
     setIsMuted(false);
     setStatus((prev) => ({ ...prev, volume: vol }));
+    audioEngine.setVolume(vol);
+    if (bridgeConnected) {
+      sendMpdCommand(`setvol ${vol}`);
+    }
   };
 
   const handleToggleMute = () => {
     if (isMuted) {
       setIsMuted(false);
-      setStatus((prev) => ({ ...prev, volume: savedVolume || 75 }));
+      const restoreVol = savedVolume || 75;
+      setStatus((prev) => ({ ...prev, volume: restoreVol }));
+      audioEngine.setVolume(restoreVol);
+      if (bridgeConnected) {
+        sendMpdCommand(`setvol ${restoreVol}`);
+      }
     } else {
       setSavedVolume(status.volume);
       setIsMuted(true);
       setStatus((prev) => ({ ...prev, volume: 0 }));
+      audioEngine.setVolume(0);
+      if (bridgeConnected) {
+        sendMpdCommand('setvol 0');
+      }
     }
   };
 
   // --- Queue Selection & Batch Actions ---
-  const handleSelectSong = (id: string, multiSelect = false) => {
+  const handleSelectSong = (id: string, _multiSelect = false) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -399,8 +467,25 @@ export default function App() {
   };
 
   const handlePlaySongAt = (index: number) => {
+    if (index < 0 || index >= queue.length) return;
+    const targetSong = queue[index];
     setCurrentIndex(index);
-    setStatus((prev) => ({ ...prev, elapsed: 0, state: 'play' }));
+    setStatus((prev) => ({
+      ...prev,
+      elapsed: 0,
+      state: 'play',
+      songIndex: index,
+      songId: targetSong ? targetSong.id : '',
+      duration: targetSong ? targetSong.duration : 0,
+    }));
+
+    if (targetSong) {
+      audioEngine.play(targetSong, 0);
+    }
+
+    if (bridgeConnected) {
+      sendMpdCommand(`play ${index}`);
+    }
   };
 
   const handleRemoveSong = (id: string) => {
@@ -554,17 +639,27 @@ export default function App() {
           setQueue(updatedQueue);
           const lastIdx = updatedQueue.length - 1;
           await sendMpdCommand(`play ${lastIdx}`);
+          handlePlaySongAt(lastIdx);
         }
       }
     } else {
       const newSong = { ...song, id: `queue-${Date.now()}-${Math.random().toString(36).substring(2, 6)}` };
+      const nextIdx = currentIndex + 1;
       setQueue((prev) => {
         const next = [...prev];
-        next.splice(currentIndex + 1, 0, newSong);
+        next.splice(nextIdx, 0, newSong);
         return next;
       });
-      setCurrentIndex((prev) => prev + 1);
-      setStatus((prev) => ({ ...prev, elapsed: 0, state: 'play' }));
+      setCurrentIndex(nextIdx);
+      setStatus((prev) => ({
+        ...prev,
+        elapsed: 0,
+        state: 'play',
+        songIndex: nextIdx,
+        songId: newSong.id,
+        duration: newSong.duration,
+      }));
+      audioEngine.play(newSong, 0);
     }
     showToast(`"${song.title}" çalınıyor.`);
   };
@@ -598,7 +693,12 @@ export default function App() {
       if (updatedQueue) setQueue(updatedQueue);
       showToast(`"${folderName}" klasörü sıraya eklendi.`);
     } else {
-      showToast(`MPD bağlantısı yok.`);
+      const folder = folders[folderPath];
+      if (folder && folder.songs.length > 0) {
+        handleAddAllToQueue(folder.songs);
+      } else {
+        showToast(`"${folderName}" klasörü eklendi.`);
+      }
     }
   };
 
@@ -615,7 +715,15 @@ export default function App() {
     };
     setQueue((prev) => [streamSong, ...prev]);
     setCurrentIndex(0);
-    setStatus((prev) => ({ ...prev, elapsed: 0, state: 'play' }));
+    setStatus((prev) => ({
+      ...prev,
+      elapsed: 0,
+      state: 'play',
+      songIndex: 0,
+      songId: streamSong.id,
+      duration: 0,
+    }));
+    audioEngine.play(streamSong, 0);
     setCurrentTab('queue');
     showToast(`"${stream.name}" akışı başlatıldı.`);
   };
@@ -819,6 +927,8 @@ export default function App() {
             onSelectAll={handleSelectAll}
             onClearSelection={handleClearSelection}
             onPlaySongAt={handlePlaySongAt}
+            onPlay={handlePlay}
+            onPause={handlePause}
             onRemoveSong={handleRemoveSong}
             onQueueNextSong={handleQueueNextSong}
             onToggleFavorite={handleToggleFavorite}

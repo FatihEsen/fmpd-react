@@ -3,6 +3,7 @@ import { Song, PlaybackState } from '../types';
 import { formatTime } from '../utils/formatters';
 import {
   Play,
+  Pause,
   Heart,
   Trash2,
   ListPlus,
@@ -21,6 +22,8 @@ interface QueueViewProps {
   onSelectAll: () => void;
   onClearSelection: () => void;
   onPlaySongAt: (index: number) => void;
+  onPlay?: () => void;
+  onPause?: () => void;
   onRemoveSong: (id: string) => void;
   onQueueNextSong: (id: string) => void;
   onToggleFavorite: (id: string) => void;
@@ -36,6 +39,8 @@ export const QueueView: React.FC<QueueViewProps> = ({
   onSelectAll,
   onClearSelection,
   onPlaySongAt,
+  onPlay,
+  onPause,
   onRemoveSong,
   onQueueNextSong,
   onToggleFavorite,
@@ -43,6 +48,20 @@ export const QueueView: React.FC<QueueViewProps> = ({
 }) => {
   const totalDuration = queue.reduce((acc, song) => acc + song.duration, 0);
   const allSelected = queue.length > 0 && selectedIds.size === queue.length;
+
+  const handleToggleRowPlayback = (idx: number, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (idx === currentIndex) {
+      if (playbackState === 'play') {
+        if (onPause) onPause();
+      } else {
+        if (onPlay) onPlay();
+        else onPlaySongAt(idx);
+      }
+    } else {
+      onPlaySongAt(idx);
+    }
+  };
 
   return (
     <section className="bg-[#1e1e2e]/90 backdrop-blur-md rounded-2xl border border-[#313244] overflow-hidden shadow-xl flex flex-col">
@@ -157,34 +176,40 @@ export const QueueView: React.FC<QueueViewProps> = ({
                       />
                     </td>
 
-                    {/* Status / Track # / Animated EQ */}
+                    {/* Status / Track # / Animated EQ & Play Button */}
                     <td className="py-3 px-3 text-center">
-                      {isPlaying ? (
-                        <div className="flex items-end justify-center gap-0.5 h-4 w-4 mx-auto">
-                          <span className="w-1 bg-[#a6e3a1] rounded-full animate-eq-1" />
-                          <span className="w-1 bg-[#fab387] rounded-full animate-eq-2" />
-                          <span className="w-1 bg-[#cba6f7] rounded-full animate-eq-3" />
-                        </div>
-                      ) : isCurrent ? (
-                        <span className="text-xs font-bold text-[#fab387]">⏸</span>
-                      ) : (
-                        <span className="text-xs text-[#6c7086] group-hover:hidden">
-                          {idx + 1}
-                        </span>
-                      )}
-                      {!isCurrent && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onPlaySongAt(idx);
-                          }}
-                          className="hidden group-hover:inline-flex text-[#fab387] hover:scale-110 transition-transform"
-                          title="Çal"
-                        >
-                          <Play className="w-3.5 h-3.5 fill-current" />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => handleToggleRowPlayback(idx, e)}
+                        className="w-7 h-7 rounded-lg flex items-center justify-center mx-auto hover:bg-[#313244] transition-all group/btn"
+                        title={
+                          isPlaying
+                            ? 'Duraklat'
+                            : isCurrent
+                            ? 'Oynat'
+                            : 'Bu Parçayı Çal'
+                        }
+                      >
+                        {isPlaying ? (
+                          <>
+                            <div className="flex items-end justify-center gap-0.5 h-3.5 w-3.5 group-hover/btn:hidden">
+                              <span className="w-0.5 bg-[#a6e3a1] rounded-full animate-eq-1" />
+                              <span className="w-0.5 bg-[#fab387] rounded-full animate-eq-2" />
+                              <span className="w-0.5 bg-[#cba6f7] rounded-full animate-eq-3" />
+                            </div>
+                            <Pause className="w-3.5 h-3.5 text-[#fab387] fill-current hidden group-hover/btn:block" />
+                          </>
+                        ) : isCurrent ? (
+                          <Play className="w-3.5 h-3.5 text-[#fab387] fill-current" />
+                        ) : (
+                          <>
+                            <span className="text-xs text-[#6c7086] group-hover:hidden">
+                              {idx + 1}
+                            </span>
+                            <Play className="w-3.5 h-3.5 text-[#fab387] fill-current hidden group-hover:block" />
+                          </>
+                        )}
+                      </button>
                     </td>
 
                     {/* Title & Mobile Artist Info */}
@@ -221,6 +246,23 @@ export const QueueView: React.FC<QueueViewProps> = ({
                     {/* Actions */}
                     <td className="py-3 px-3 text-center">
                       <div className="flex items-center justify-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          onClick={(e) => handleToggleRowPlayback(idx, e)}
+                          title={isPlaying ? 'Duraklat' : 'Çal'}
+                          className={`p-1.5 rounded-lg transition-colors ${
+                            isCurrent
+                              ? 'text-[#fab387] hover:bg-[#fab387]/20'
+                              : 'text-[#6c7086] hover:text-[#fab387] hover:bg-[#313244]'
+                          }`}
+                        >
+                          {isPlaying ? (
+                            <Pause className="w-3.5 h-3.5 fill-current" />
+                          ) : (
+                            <Play className="w-3.5 h-3.5 fill-current" />
+                          )}
+                        </button>
+
                         <button
                           type="button"
                           onClick={(e) => {

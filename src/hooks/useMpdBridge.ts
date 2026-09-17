@@ -6,7 +6,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Song, MpdStatus, MpdConfig } from '../types';
 
-export function useMpdBridge(config: MpdConfig, showToast: (msg: string) => void) {
+export function useMpdBridge(
+  config: MpdConfig,
+  showToast: (msg: string) => void,
+  onStatusUpdate?: (status: Partial<MpdStatus>, currentTrack?: any) => void
+) {
   const [bridgeConnected, setBridgeConnected] = useState<boolean>(false);
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const wsRef = useRef<WebSocket | null>(null);
@@ -106,6 +110,10 @@ export function useMpdBridge(config: MpdConfig, showToast: (msg: string) => void
         const msg = JSON.parse(event.data);
         if (msg.type === 'bridge_status') {
           setBridgeConnected(msg.connected);
+        } else if (msg.type === 'status' && msg.data) {
+          if (onStatusUpdate) {
+            onStatusUpdate(msg.data, msg.data.currentTrack);
+          }
         }
       } catch {
         // Ignore parse error
@@ -119,7 +127,7 @@ export function useMpdBridge(config: MpdConfig, showToast: (msg: string) => void
     return () => {
       ws.close();
     };
-  }, []);
+  }, [onStatusUpdate]);
 
   return {
     bridgeConnected,

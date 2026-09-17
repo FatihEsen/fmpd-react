@@ -124,12 +124,13 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 {searchResults.map((song) => (
                   <div
                     key={song.id}
-                    className="py-2.5 px-3 rounded-xl hover:bg-[#313244]/40 flex items-center justify-between gap-3 group transition-colors"
+                    onDoubleClick={() => onPlaySongNow(song)}
+                    className="py-2.5 px-3 rounded-xl hover:bg-[#313244]/40 flex items-center justify-between gap-3 group transition-colors cursor-pointer select-none"
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <Music className="w-4 h-4 text-[#fab387] shrink-0" />
                       <div className="min-w-0">
-                        <p className="font-semibold text-sm text-[#cdd6f4] truncate">
+                        <p className="font-semibold text-sm text-[#cdd6f4] group-hover:text-[#fab387] truncate transition-colors">
                           {song.title}
                         </p>
                         <p className="text-xs text-[#a6adc8] truncate">
@@ -144,7 +145,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       </span>
                       <button
                         type="button"
-                        onClick={() => onPlaySongNow(song)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onPlaySongNow(song);
+                        }}
                         title="Hemen Çal"
                         className="p-1.5 rounded-lg bg-[#fab387] text-[#11111b] hover:bg-[#f9e2af] transition-all"
                       >
@@ -152,7 +156,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onAddSongToQueue(song)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAddSongToQueue(song);
+                        }}
                         title="Kuyruğa Ekle"
                         className="p-1.5 rounded-lg bg-[#313244] text-[#cdd6f4] hover:bg-[#45475a] transition-all"
                       >
@@ -244,7 +251,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   {currentFolder.songs.map((song, i) => (
                     <div
                       key={song.id}
-                      className="py-2.5 px-3 rounded-xl hover:bg-[#313244]/40 flex items-center justify-between gap-3 group transition-colors"
+                      onDoubleClick={() => onPlaySongNow(song)}
+                      className="py-2.5 px-3 rounded-xl hover:bg-[#313244]/40 flex items-center justify-between gap-3 group transition-colors cursor-pointer select-none"
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <span className="text-xs font-mono text-[#6c7086] w-6 text-center">
@@ -266,7 +274,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                         </span>
                         <button
                           type="button"
-                          onClick={() => onPlaySongNow(song)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onPlaySongNow(song);
+                          }}
                           title="Hemen Çal"
                           className="p-1.5 rounded-lg bg-[#fab387] text-[#11111b] hover:bg-[#f9e2af] transition-all"
                         >
@@ -274,7 +285,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => onAddSongToQueue(song)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onAddSongToQueue(song);
+                          }}
                           title="Kuyruğa Ekle"
                           className="p-1.5 rounded-lg bg-[#313244] text-[#cdd6f4] hover:bg-[#45475a] transition-all"
                         >
