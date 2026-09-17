@@ -20,7 +20,7 @@ import { NowPlayingCard } from './components/NowPlayingCard';
 import { QueueView } from './components/QueueView';
 import { LibraryView } from './components/LibraryView';
 import { StreamsView } from './components/StreamsView';
-import { MobileMiniPlayer } from './components/MobileMiniPlayer';
+import { FooterPlayer } from './components/FooterPlayer';
 import { ShortcutsModal } from './components/modals/ShortcutsModal';
 import { AddStreamModal } from './components/modals/AddStreamModal';
 import { SavePlaylistModal } from './components/modals/SavePlaylistModal';
@@ -869,7 +869,7 @@ export default function App() {
   });
 
   return (
-    <div className="min-h-screen bg-[#1e1e2e] text-[#cdd6f4] flex flex-col font-['Quicksand'] pb-20 md:pb-8 selection:bg-[#fab387]/30 selection:text-[#fab387]">
+    <div className="min-h-screen bg-[#1e1e2e] text-[#cdd6f4] flex flex-col font-['Quicksand'] pb-28 sm:pb-32 md:pb-28 selection:bg-[#fab387]/30 selection:text-[#fab387]">
       {/* App Header */}
       <AppHeader
         currentTab={currentTab}
@@ -961,22 +961,36 @@ export default function App() {
         )}
       </main>
 
-      {/* Mobile Mini Player (Fixed at bottom on small screens) */}
-      <MobileMiniPlayer
+      {/* Sticky Now Playing Footer Player (Active on Desktop, Tablet & Mobile) */}
+      <FooterPlayer
         currentSong={currentSong}
-        playbackState={status.state}
-        elapsed={status.elapsed}
+        status={status}
+        selectedCount={selectedIds.size}
         onPlay={handlePlay}
         onPause={handlePause}
+        onStop={handleStop}
         onNext={handleNext}
         onPrev={handlePrev}
+        onSeek={handleSeek}
+        onToggleRandom={handleToggleRandom}
+        onToggleRepeat={handleToggleRepeat}
+        onToggleSingle={handleToggleSingle}
+        onToggleConsume={handleToggleConsume}
         onToggleFavorite={handleToggleFavorite}
+        onBatchDelete={handleBatchDelete}
+        onBatchMoveUp={handleBatchMoveUp}
+        onBatchMoveDown={handleBatchMoveDown}
+        onBatchQueueNext={handleBatchQueueNext}
+        onOpenSaveModal={() => setSavePlaylistOpen(true)}
+        onVolumeChange={handleVolumeChange}
+        onToggleMute={handleToggleMute}
+        isMuted={isMuted}
         onScrollToTop={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
       />
 
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-16 md:bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-[#fab387] text-[#11111b] font-bold text-xs sm:text-sm shadow-xl animate-in fade-in slide-in-from-bottom-2 duration-150 select-none">
+        <div className="fixed bottom-24 sm:bottom-20 md:bottom-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-[#fab387] text-[#11111b] font-bold text-xs sm:text-sm shadow-xl animate-in fade-in slide-in-from-bottom-2 duration-150 select-none">
           {toastMessage}
         </div>
       )}
