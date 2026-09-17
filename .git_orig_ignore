@@ -1,5 +1,0 @@
-build/
-*.o
-*.a
-src/assets.c
-tools/mkdata
