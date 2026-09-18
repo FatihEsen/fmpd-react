@@ -9,19 +9,14 @@ import {
   MpdStatus,
   TabType,
   MpdConfig,
-  StreamItem,
   LibraryFolder,
 } from './types';
-import { INITIAL_STREAMS } from './data/streams';
 import { audioEngine } from './utils/audioEngine';
 import { AppHeader } from './components/AppHeader';
-import { NowPlayingCard } from './components/NowPlayingCard';
 import { QueueView } from './components/QueueView';
 import { LibraryView } from './components/LibraryView';
-import { StreamsView } from './components/StreamsView';
 import { FooterPlayer } from './components/FooterPlayer';
 import { ShortcutsModal } from './components/modals/ShortcutsModal';
-import { AddStreamModal } from './components/modals/AddStreamModal';
 import { SavePlaylistModal } from './components/modals/SavePlaylistModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { useMpdBridge } from './hooks/useMpdBridge';
@@ -43,11 +38,8 @@ export default function App() {
       songs: [],
     },
   });
-  const [streams, setStreams] = useState<StreamItem[]>(INITIAL_STREAMS);
-
   // Modals
   const [shortcutsOpen, setShortcutsOpen] = useState<boolean>(false);
-  const [addStreamOpen, setAddStreamOpen] = useState<boolean>(false);
   const [savePlaylistOpen, setSavePlaylistOpen] = useState<boolean>(false);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [isUpdatingDb, setIsUpdatingDb] = useState<boolean>(false);
@@ -724,55 +716,6 @@ export default function App() {
     }
   };
 
-  // --- Streams Actions ---
-  const handlePlayStream = (stream: StreamItem) => {
-    const streamSong: Song = {
-      id: `stream-${Date.now()}`,
-      file: stream.url,
-      title: stream.name,
-      artist: stream.genre || 'Canlı Radyo',
-      album: 'İnternet Akışı',
-      duration: 0,
-      genre: stream.genre,
-    };
-    setQueue((prev) => [streamSong, ...prev]);
-    setCurrentIndex(0);
-    setStatus((prev) => ({
-      ...prev,
-      elapsed: 0,
-      state: 'play',
-      songIndex: 0,
-      songId: streamSong.id,
-      duration: 0,
-    }));
-    audioEngine.play(streamSong, 0);
-    setCurrentTab('queue');
-    showToast(`"${stream.name}" akışı başlatıldı.`);
-  };
-
-  const handleAddStreamToQueue = (stream: StreamItem) => {
-    const streamSong: Song = {
-      id: `stream-${Date.now()}`,
-      file: stream.url,
-      title: stream.name,
-      artist: stream.genre || 'Canlı Radyo',
-      album: 'İnternet Akışı',
-      duration: 0,
-    };
-    setQueue((prev) => [...prev, streamSong]);
-    showToast(`"${stream.name}" akışı kuyruğa eklendi.`);
-  };
-
-  const handleAddCustomStream = (newStream: StreamItem) => {
-    setStreams((prev) => [newStream, ...prev]);
-    showToast(`"${newStream.name}" listeye eklendi.`);
-  };
-
-  const handleRemoveStream = (id: string) => {
-    setStreams((prev) => prev.filter((s) => s.id !== id));
-    showToast('Akış silindi.');
-  };
-
   // --- Database Update ---
   const handleUpdateDb = async () => {
     setIsUpdatingDb(true);
@@ -882,7 +825,6 @@ export default function App() {
           break;
         case 'Escape':
           setShortcutsOpen(false);
-          setAddStreamOpen(false);
           setSavePlaylistOpen(false);
           setSettingsOpen(false);
           break;
@@ -905,7 +847,6 @@ export default function App() {
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onOpenShortcuts={() => setShortcutsOpen(true)}
-        onOpenAddStream={() => setAddStreamOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
         onUpdateDb={handleUpdateDb}
         isUpdatingDb={isUpdatingDb}
@@ -914,33 +855,6 @@ export default function App() {
 
       {/* Main Container */}
       <main className="max-w-7xl w-full mx-auto p-3 sm:p-6 flex flex-col gap-6 flex-1">
-        {/* Now Playing Top Card */}
-        <NowPlayingCard
-          currentSong={currentSong}
-          status={status}
-          selectedCount={selectedIds.size}
-          onPlay={handlePlay}
-          onPause={handlePause}
-          onStop={handleStop}
-          onNext={handleNext}
-          onPrev={handlePrev}
-          onSeek={handleSeek}
-          onToggleRandom={handleToggleRandom}
-          onToggleRepeat={handleToggleRepeat}
-          onToggleSingle={handleToggleSingle}
-          onToggleConsume={handleToggleConsume}
-          onToggleFavorite={handleToggleFavorite}
-          onBatchDelete={handleBatchDelete}
-          onBatchMoveUp={handleBatchMoveUp}
-          onBatchMoveDown={handleBatchMoveDown}
-          onBatchQueueNext={handleBatchQueueNext}
-          onClearQueue={handleClearQueue}
-          onOpenSaveModal={() => setSavePlaylistOpen(true)}
-          onVolumeChange={handleVolumeChange}
-          onToggleMute={handleToggleMute}
-          isMuted={isMuted}
-        />
-
         {/* View Tabs */}
         {currentTab === 'queue' && (
           <QueueView
@@ -974,16 +888,6 @@ export default function App() {
             onAddFolderToQueue={handleAddFolderToQueue}
           />
         )}
-
-        {currentTab === 'streams' && (
-          <StreamsView
-            streams={streams}
-            onPlayStream={handlePlayStream}
-            onAddStreamToQueue={handleAddStreamToQueue}
-            onRemoveStream={handleRemoveStream}
-            onOpenAddModal={() => setAddStreamOpen(true)}
-          />
-        )}
       </main>
 
       {/* Sticky Now Playing Footer Player (Active on Desktop, Tablet & Mobile) */}
@@ -1006,6 +910,7 @@ export default function App() {
         onBatchMoveUp={handleBatchMoveUp}
         onBatchMoveDown={handleBatchMoveDown}
         onBatchQueueNext={handleBatchQueueNext}
+        onClearQueue={handleClearQueue}
         onOpenSaveModal={() => setSavePlaylistOpen(true)}
         onVolumeChange={handleVolumeChange}
         onToggleMute={handleToggleMute}
@@ -1024,11 +929,6 @@ export default function App() {
       <ShortcutsModal
         isOpen={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
-      />
-      <AddStreamModal
-        isOpen={addStreamOpen}
-        onClose={() => setAddStreamOpen(false)}
-        onAddStream={handleAddCustomStream}
       />
       <SavePlaylistModal
         isOpen={savePlaylistOpen}

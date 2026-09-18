@@ -1,5 +1,5 @@
 /**
- * FMPD - Catppuccin & Ghibli MPD Web Client Types
+ * FMPD - Catppuccin MPD Web Client Types
  */
 
 export type PlaybackState = 'play' | 'pause' | 'stop';
@@ -42,15 +42,6 @@ export interface LibraryFolder {
   songs: Song[];
 }
 
-export interface StreamItem {
-  id: string;
-  name: string;
-  url: string;
-  genre?: string;
-  bitrate?: string;
-  icon?: string;
-}
-
 export interface MpdConfig {
   host: string;
   port: number;
@@ -59,4 +50,4 @@ export interface MpdConfig {
   connected: boolean;
 }
 
-export type TabType = 'queue' | 'library' | 'streams';
+export type TabType = 'queue' | 'library';

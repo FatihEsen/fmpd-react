@@ -34,7 +34,7 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
         <div className="flex items-center justify-between border-b border-[#313244] pb-3">
           <div className="flex items-center gap-2 text-[#cdd6f4]">
             <Keyboard className="w-5 h-5 text-[#fab387]" />
-            <h3 className="font-bold text-lg">ncmpcpp & ympd Kısayolları</h3>
+            <h3 className="font-bold text-lg">ncmpcpp & FMPD Klavye Kısayolları</h3>
           </div>
           <button
             type="button"

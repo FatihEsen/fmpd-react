@@ -4,13 +4,11 @@ import {
   Radio, 
   FolderTree, 
   HelpCircle, 
-  Plus, 
   RefreshCw, 
   Settings, 
   Search, 
-  Waves,
-  Wifi,
-  WifiOff
+  Wifi, 
+  WifiOff 
 } from 'lucide-react';
 
 interface AppHeaderProps {
@@ -19,7 +17,6 @@ interface AppHeaderProps {
   searchQuery: string;
   onSearchChange: (q: string) => void;
   onOpenShortcuts: () => void;
-  onOpenAddStream: () => void;
   onOpenSettings: () => void;
   onUpdateDb: () => void;
   isUpdatingDb: boolean;
@@ -32,7 +29,6 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   searchQuery,
   onSearchChange,
   onOpenShortcuts,
-  onOpenAddStream,
   onOpenSettings,
   onUpdateDb,
   isUpdatingDb,
@@ -42,11 +38,15 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
     <header className="sticky top-0 z-30 bg-[#181825]/90 backdrop-blur-md border-b border-[#313244] px-4 py-3 sm:px-6">
       <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-3">
         {/* Left: Brand & Navigation */}
-        <div className="flex items-center gap-6 w-full md:w-auto justify-between md:justify-start">
-          <div className="flex items-center gap-2 select-none cursor-pointer" onClick={() => onTabChange('queue')}>
-            <span className="text-xl font-bold tracking-tight text-[#cdd6f4]">ympd</span>
-            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-semibold bg-[#fab387]/20 text-[#fab387] border border-[#fab387]/30">
-              <span className="text-sm">🌱</span> Ghibli
+        <div className="flex items-center gap-4 sm:gap-6 w-full md:w-auto justify-between md:justify-start">
+          <div
+            className="flex items-center select-none cursor-pointer"
+            onClick={() => onTabChange('queue')}
+            title="FMPD"
+          >
+            <span className="inline-flex items-center gap-1.5 text-sm sm:text-base px-2.5 py-1 rounded-xl font-bold bg-[#fab387]/15 text-[#fab387] border border-[#fab387]/30 hover:bg-[#fab387]/25 transition-all shadow-sm">
+              <span className="text-base leading-none">🌱</span>
+              <span className="tracking-wider font-extrabold text-[#fab387]">FMPD</span>
             </span>
           </div>
 
@@ -78,20 +78,6 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
             >
               <FolderTree className="w-4 h-4" />
               <span>Kütüphane</span>
-            </button>
-
-            <button
-              id="tab-streams"
-              type="button"
-              onClick={() => onTabChange('streams')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${
-                currentTab === 'streams'
-                  ? 'bg-[#cba6f7] text-[#11111b] shadow-sm'
-                  : 'text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244]/50'
-              }`}
-            >
-              <Waves className="w-4 h-4" />
-              <span>Akışlar</span>
             </button>
           </nav>
         </div>
@@ -151,17 +137,6 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
             className="p-2 rounded-xl text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244] border border-transparent hover:border-[#45475a] transition-all"
           >
             <HelpCircle className="w-4 h-4" />
-          </button>
-
-          <button
-            id="btn-add-stream"
-            type="button"
-            onClick={onOpenAddStream}
-            title="İnternet Radyosu / Akış Ekle"
-            aria-label="İnternet Radyosu / Akış Ekle"
-            className="p-2 rounded-xl text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244] border border-transparent hover:border-[#45475a] transition-all"
-          >
-            <Plus className="w-4 h-4" />
           </button>
 
           <button
