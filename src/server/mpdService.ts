@@ -100,4 +100,25 @@ export class MpdService extends EventEmitter {
     this.client.disconnect();
     this.emit('bridge_status', false);
   }
+
+  /** Sends several commands to MPD in a single round trip. */
+  public async sendCommands(cmds: string[]): Promise<string[][]> {
+    return this.client.sendCommands(cmds);
+  }
+
+  /**
+   * Reads the current status and pushes it to all clients.
+   *
+   * Called right after a state changing command so the UI does not have to
+   * wait for the next poll tick to see the effect of a button press.
+   */
+  public async refreshStatus(): Promise<void> {
+    if (!this.isConnected()) return;
+    try {
+      const status = await this.client.getStatus();
+      this.emit('status', status);
+    } catch {
+      /* the periodic poll will pick it up */
+    }
+  }
 }

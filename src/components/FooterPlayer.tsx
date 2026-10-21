@@ -36,7 +36,7 @@ interface FooterPlayerProps {
   onToggleRepeat: () => void;
   onToggleSingle: () => void;
   onToggleConsume: () => void;
-  onToggleFavorite: (id: string) => void;
+  onToggleFavorite: (song: Song) => void;
   onBatchDelete?: () => void;
   onBatchMoveUp?: () => void;
   onBatchMoveDown?: () => void;
@@ -186,7 +186,7 @@ export const FooterPlayer: React.FC<FooterPlayerProps> = ({
             {currentSong && (
               <button
                 type="button"
-                onClick={() => onToggleFavorite(currentSong.id)}
+                onClick={() => onToggleFavorite(currentSong)}
                 title={currentSong.isFavorite ? 'Favorilerden Çıkar' : 'Favorilere Ekle'}
                 className="p-1.5 text-[#a6adc8] hover:text-[#f38ba8] hover:bg-[#313244]/60 rounded-xl transition-all shrink-0"
               >

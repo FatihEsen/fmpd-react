@@ -10,7 +10,7 @@ interface MobileMiniPlayerProps {
   onPause: () => void;
   onNext: () => void;
   onPrev: () => void;
-  onToggleFavorite: (id: string) => void;
+  onToggleFavorite: (song: Song) => void;
   onScrollToTop: () => void;
 }
 
@@ -70,7 +70,7 @@ export const MobileMiniPlayer: React.FC<MobileMiniPlayerProps> = ({
         <div className="flex items-center gap-1 shrink-0">
           <button
             type="button"
-            onClick={() => onToggleFavorite(currentSong.id)}
+            onClick={() => onToggleFavorite(currentSong)}
             className="p-2 text-[#a6adc8] hover:text-[#f38ba8]"
           >
             <Heart

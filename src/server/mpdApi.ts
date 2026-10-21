@@ -79,7 +79,31 @@ export function createMpdApiApp(service: MpdService): express.Express {
         return res.status(400).json({ error: 'MPD not connected' });
       }
       const lines = await service.getClient().sendCommand(command);
+      // Push the resulting state right away instead of waiting for the
+      // next poll tick, so button presses feel instant.
+      service.refreshStatus();
       res.json({ success: true, result: lines });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Unknown error' });
+    }
+  });
+
+  // --- Batch of MPD commands (single round trip) ---
+  app.post('/commands', async (req: Request, res: Response) => {
+    const { commands } = req.body || {};
+    if (!Array.isArray(commands) || commands.length === 0) {
+      return res.status(400).json({ error: 'Missing commands' });
+    }
+    if (commands.some((c) => typeof c !== 'string')) {
+      return res.status(400).json({ error: 'Commands must be strings' });
+    }
+    try {
+      if (!service.isConnected()) {
+        return res.status(400).json({ error: 'MPD not connected' });
+      }
+      const results = await service.sendCommands(commands);
+      service.refreshStatus();
+      res.json({ success: true, results });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Unknown error' });
     }

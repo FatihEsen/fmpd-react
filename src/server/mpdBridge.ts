@@ -34,12 +34,29 @@ export interface MpdServerStatus {
   };
 }
 
-interface CommandEntry {
-  cmd: string;
-  resolve: (res: string[]) => void;
-  reject: (err: Error) => void;
-  timer?: NodeJS.Timeout;
-}
+/**
+ * A single command and a batch of commands share the same queue slot.
+ * MPD accepts several commands in one write, separated by newlines, and
+ * answers each of them with its own OK/ACK - that keeps bulk operations
+ * (adding a whole folder to the queue) down to a single round trip.
+ */
+type PendingCommand =
+  | {
+      kind: 'single';
+      cmd: string;
+      resolve: (res: string[]) => void;
+      reject: (err: Error) => void;
+      timer?: NodeJS.Timeout;
+    }
+  | {
+      kind: 'batch';
+      cmds: string[];
+      results: string[][];
+      index: number;
+      resolve: (res: string[][]) => void;
+      reject: (err: Error) => void;
+      timer?: NodeJS.Timeout;
+    };
 
 export class MpdBridgeClient extends EventEmitter {
   private socket: net.Socket | null = null;
@@ -48,8 +65,8 @@ export class MpdBridgeClient extends EventEmitter {
   private password?: string;
   private isConnected = false;
   private buffer = '';
-  private commandQueue: CommandEntry[] = [];
-  private currentCommand: CommandEntry | null = null;
+  private commandQueue: PendingCommand[] = [];
+  private currentCommand: PendingCommand | null = null;
   private currentResponseLines: string[] = [];
   private pollTimer: NodeJS.Timeout | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -58,6 +75,8 @@ export class MpdBridgeClient extends EventEmitter {
   private manuallyClosed = false;
   /** Every command must answer within this window, otherwise it is rejected. */
   private commandTimeoutMs = 10000;
+  /** Last volume MPD reported, kept for builds that do not report it. */
+  private lastKnownVolume = 85;
 
   constructor(host = 'localhost', port = 6600, password?: string) {
     super();
@@ -252,58 +271,51 @@ export class MpdBridgeClient extends EventEmitter {
   }
 
   private handleLine(line: string) {
+    const current = this.currentCommand;
+    if (!current) return;
+
     if (line === 'OK') {
-      if (this.currentCommand) {
-        const finished = this.currentCommand;
+      if (current.kind === 'single') {
         const lines = this.currentResponseLines;
         this.currentCommand = null;
         this.currentResponseLines = [];
-        if (finished.timer) clearTimeout(finished.timer);
-        finished.resolve(lines);
+        if (current.timer) clearTimeout(current.timer);
+        current.resolve(lines);
         this.sendNext();
+      } else {
+        // A batch answers with one OK per command.
+        current.results[current.index] = this.currentResponseLines;
+        this.currentResponseLines = [];
+        current.index += 1;
+        if (current.index >= current.cmds.length) {
+          this.currentCommand = null;
+          if (current.timer) clearTimeout(current.timer);
+          current.resolve(current.results);
+          this.sendNext();
+        }
       }
     } else if (line.startsWith('ACK')) {
-      if (this.currentCommand) {
-        const failed = this.currentCommand;
-        this.currentCommand = null;
-        this.currentResponseLines = [];
-        if (failed.timer) clearTimeout(failed.timer);
-        failed.reject(new Error(line));
-        this.sendNext();
-      }
+      const failed = current;
+      this.currentCommand = null;
+      this.currentResponseLines = [];
+      if (failed.timer) clearTimeout(failed.timer);
+      failed.reject(new Error(line));
+      this.sendNext();
     } else {
-      if (this.currentCommand) {
-        this.currentResponseLines.push(line);
-      }
+      this.currentResponseLines.push(line);
     }
   }
 
+  /** Sends a single command and resolves with its response lines. */
   public sendCommand(cmd: string): Promise<string[]> {
+    this.trackVolume(cmd);
     return new Promise((resolve, reject) => {
       if (!this.isConnected || !this.socket) {
         return reject(new Error('MPD is not connected'));
       }
 
-      const entry: CommandEntry = { cmd, resolve, reject };
-
-      // A command that never gets an answer must not hang the caller
-      // (REST handlers, the polling loop, ...) forever.
-      entry.timer = setTimeout(() => {
-        const queuedAt = this.commandQueue.indexOf(entry);
-        if (queuedAt !== -1) {
-          this.commandQueue.splice(queuedAt, 1);
-          entry.reject(new Error(`MPD command timed out: ${cmd}`));
-          return;
-        }
-        if (this.currentCommand === entry) {
-          this.currentCommand = null;
-          this.currentResponseLines = [];
-          entry.reject(new Error(`MPD command timed out: ${cmd}`));
-          this.sendNext();
-        }
-      }, this.commandTimeoutMs);
-      entry.timer.unref?.();
-
+      const entry: PendingCommand = { kind: 'single', cmd, resolve, reject };
+      this.armTimeout(entry, cmd);
       this.commandQueue.push(entry);
       if (!this.currentCommand) {
         this.sendNext();
@@ -311,14 +323,85 @@ export class MpdBridgeClient extends EventEmitter {
     });
   }
 
+  /**
+   * Sends several commands in a single socket write and resolves with the
+   * response lines of every command. One ACK rejects the whole batch.
+   */
+  public sendCommands(cmds: string[]): Promise<string[][]> {
+    cmds.forEach((c) => this.trackVolume(c));
+    return new Promise((resolve, reject) => {
+      if (!this.isConnected || !this.socket) {
+        return reject(new Error('MPD is not connected'));
+      }
+      if (cmds.length === 0) {
+        return resolve([]);
+      }
+
+      const entry: PendingCommand = {
+        kind: 'batch',
+        cmds,
+        results: cmds.map(() => [] as string[]),
+        index: 0,
+        resolve,
+        reject,
+      };
+      this.armTimeout(entry, `${cmds.length} commands`);
+      this.commandQueue.push(entry);
+      if (!this.currentCommand) {
+        this.sendNext();
+      }
+    });
+  }
+
+  /**
+   * Remembers the volume that was requested through `setvol`.
+   *
+   * MPD only reports the volume in its status when the audio output has a
+   * mixer. Without that information the UI would jump back to the default
+   * volume after every status update.
+   */
+  private trackVolume(cmd: string) {
+    const match = /^setvol\s+(\d{1,3})\s*$/.exec(cmd);
+    if (!match) return;
+    const volume = parseInt(match[1], 10);
+    if (volume >= 0 && volume <= 100) {
+      this.lastKnownVolume = volume;
+    }
+  }
+
+  /**
+   * A command that never gets an answer must not hang the caller
+   * (REST handlers, the polling loop, ...) forever.
+   */
+  private armTimeout(entry: PendingCommand, label: string) {
+    entry.timer = setTimeout(() => {
+      const queuedAt = this.commandQueue.indexOf(entry);
+      if (queuedAt !== -1) {
+        this.commandQueue.splice(queuedAt, 1);
+        entry.reject(new Error(`MPD command timed out: ${label}`));
+        return;
+      }
+      if (this.currentCommand === entry) {
+        this.currentCommand = null;
+        this.currentResponseLines = [];
+        entry.reject(new Error(`MPD command timed out: ${label}`));
+        this.sendNext();
+      }
+    }, this.commandTimeoutMs);
+    entry.timer.unref?.();
+  }
+
   private sendNext() {
     if (this.commandQueue.length === 0) return;
-    this.currentCommand = this.commandQueue.shift()!;
+    const entry = this.commandQueue.shift()!;
+    this.currentCommand = entry;
     this.currentResponseLines = [];
+    const payload =
+      entry.kind === 'single' ? entry.cmd : entry.cmds.join('\n');
     try {
-      this.socket?.write(`${this.currentCommand.cmd}\n`);
+      this.socket?.write(`${payload}\n`);
     } catch (err) {
-      const failed = this.currentCommand;
+      const failed = entry;
       this.currentCommand = null;
       if (failed.timer) clearTimeout(failed.timer);
       failed.reject(err as Error);
@@ -366,13 +449,26 @@ export class MpdBridgeClient extends EventEmitter {
     const elapsed = parseFloat(statusMap['elapsed'] || '0');
     const duration = parseFloat(statusMap['duration'] || currentTrack?.duration?.toString() || '0');
 
+    // MPD only reports a position while a song is selected. -1 means
+    // "unknown", so the client can keep the last known position instead
+    // of jumping back to the first entry.
+    const songIndex =
+      statusMap['song'] !== undefined ? parseInt(statusMap['song'], 10) : -1;
+
+    const reportedVolume = statusMap['volume'];
+    if (reportedVolume !== undefined) {
+      this.lastKnownVolume = parseInt(reportedVolume, 10);
+    }
+
     return {
       state,
-      songIndex: parseInt(statusMap['song'] || '0', 10),
+      songIndex,
       songId: statusMap['songid'] || currentTrack?.id || '',
       elapsed: Math.floor(elapsed),
       duration: Math.floor(duration),
-      volume: parseInt(statusMap['volume'] || '85', 10),
+      // Not every MPD build reports the volume (it needs a mixer output).
+      // Reuse the last known value instead of resetting the UI to 85.
+      volume: this.lastKnownVolume,
       repeat: statusMap['repeat'] === '1',
       random: statusMap['random'] === '1',
       single: statusMap['single'] === '1',

@@ -34,6 +34,22 @@ export function useMpdBridge(
     }
   }, []);
 
+  // Send several commands in a single round trip
+  const sendMpdCommands = useCallback(async (commands: string[]): Promise<boolean> => {
+    if (commands.length === 0) return true;
+    try {
+      const res = await fetch('/api/mpd/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commands }),
+      });
+      const data = await res.json();
+      return data.success === true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   // Fetch real queue from MPD server
   const fetchQueue = useCallback(async (): Promise<Song[] | null> => {
     try {
@@ -180,6 +196,7 @@ export function useMpdBridge(
     isConnecting,
     connectBridge,
     sendMpdCommand,
+    sendMpdCommands,
     fetchQueue,
     fetchLibrary,
     fetchAllSongs,

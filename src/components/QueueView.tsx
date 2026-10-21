@@ -42,7 +42,7 @@ interface QueueRowProps {
   onSelectSong: (id: string, multiSelect?: boolean) => void;
   onPlaySongAt: (index: number) => void;
   onToggleRowPlayback: (idx: number, e?: React.MouseEvent) => void;
-  onToggleFavorite: (id: string) => void;
+  onToggleFavorite: (song: Song) => void;
   onQueueNextSong: (id: string) => void;
   onRemoveSong: (id: string) => void;
 }
@@ -171,7 +171,7 @@ const QueueRow: React.FC<QueueRowProps> = React.memo(
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                onToggleFavorite(song.id);
+                onToggleFavorite(song);
               }}
               title={song.isFavorite ? 'Favorilerden Çıkar' : 'Favorilere Ekle'}
               className={`p-1.5 rounded-lg transition-colors ${

@@ -1,6 +1,14 @@
 /**
  * FMPD - Catppuccin & Ghibli MPD Web Client
  * Modern React & TypeScript Rewrite
+ *
+ * The MPD server is the single source of truth:
+ *  - every queue mutation is sent to MPD and the local state is refreshed
+ *    from the server afterwards,
+ *  - the playback state (position, elapsed time, modes) comes from the
+ *    status stream the server pushes over the WebSocket.
+ * The local state only holds what is purely a UI concern (selection, search,
+ * open modals, ...).
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -11,7 +19,12 @@ import {
   MpdConfig,
   LibraryFolder,
 } from './types';
-import { audioEngine } from './utils/audioEngine';
+import { mpdCommands } from './utils/mpdCommands';
+import {
+  buildMoveCommands,
+  buildQueueNextCommands,
+  buildDeleteCommands,
+} from './utils/queueOps';
 import { AppHeader } from './components/AppHeader';
 import { QueueView } from './components/QueueView';
 import { LibraryView } from './components/LibraryView';
@@ -21,8 +34,16 @@ import { SavePlaylistModal } from './components/modals/SavePlaylistModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { useMpdBridge } from './hooks/useMpdBridge';
 
+const ROOT_FOLDER: LibraryFolder = {
+  path: '',
+  name: 'Kütüphane Ana Dizini',
+  parentPath: null,
+  subFolders: [],
+  songs: [],
+};
+
 export default function App() {
-  // --- State ---
+  // --- UI state ---
   const [queue, setQueue] = useState<Song[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -30,14 +51,9 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [currentPath, setCurrentPath] = useState<string>('');
   const [folders, setFolders] = useState<Record<string, LibraryFolder>>({
-    '': {
-      path: '',
-      name: 'Kütüphane Ana Dizini',
-      parentPath: null,
-      subFolders: [],
-      songs: [],
-    },
+    '': ROOT_FOLDER,
   });
+  const [librarySongs, setLibrarySongs] = useState<Song[]>([]);
   // Modals
   const [shortcutsOpen, setShortcutsOpen] = useState<boolean>(false);
   const [savePlaylistOpen, setSavePlaylistOpen] = useState<boolean>(false);
@@ -72,11 +88,9 @@ export default function App() {
     };
   });
 
-  const currentSong = queue[currentIndex] || null;
-
   const [status, setStatus] = useState<MpdStatus>({
     state: 'stop',
-    songIndex: 0,
+    songIndex: -1,
     songId: '',
     elapsed: 0,
     duration: 0,
@@ -90,13 +104,39 @@ export default function App() {
     queueCount: 0,
   });
 
+  // --- Refs (values that change often must not retrigger effects) ---
+  const statusRef = useRef<MpdStatus>(status);
+  const queueRef = useRef<Song[]>(queue);
+  const favoriteFilesRef = useRef<Set<string>>(new Set());
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const actionsRef = useRef<Record<string, (...args: any[]) => void> | null>(null);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
+
+  const currentSong = queue[currentIndex] || null;
+
   // Show quick toast notification
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
       setToastMessage(null);
+      toastTimerRef.current = null;
     }, 2800);
   }, []);
+
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    },
+    []
+  );
 
   // Handle live status updates pushed from MPD
   const handleMpdStatusUpdate = useCallback(
@@ -104,10 +144,13 @@ export default function App() {
       setStatus((prev) => ({
         ...prev,
         ...mpdStatus,
-        duration: mpdStatus.duration || (currentTrack?.duration ? parseInt(currentTrack.duration, 10) : prev.duration),
+        duration:
+          mpdStatus.duration ||
+          (currentTrack?.duration ? parseInt(currentTrack.duration, 10) : prev.duration),
       }));
 
-      if (mpdStatus.songIndex !== undefined && mpdStatus.songIndex >= 0) {
+      // -1 means MPD does not know a position (stopped) - keep the last one.
+      if (typeof mpdStatus.songIndex === 'number' && mpdStatus.songIndex >= 0) {
         setCurrentIndex(mpdStatus.songIndex);
       }
     },
@@ -120,6 +163,7 @@ export default function App() {
     isConnecting,
     connectBridge,
     sendMpdCommand,
+    sendMpdCommands,
     fetchQueue,
     fetchLibrary,
     fetchAllSongs,
@@ -130,69 +174,124 @@ export default function App() {
     setConfig((prev) => ({ ...prev, connected: bridgeConnected }));
   }, [bridgeConnected]);
 
-  // Sync queue from real MPD when connected
-  useEffect(() => {
-    if (bridgeConnected) {
-      fetchQueue().then((mpdQueue) => {
-        if (mpdQueue) {
-          setQueue(mpdQueue);
-        }
-      });
-    }
-  }, [bridgeConnected, fetchQueue]);
-
-  // Load directory from real MPD when browsing library or when connected
-  const loadMpdPath = useCallback(
-    async (path: string) => {
-      if (!bridgeConnected) return;
-      const res = await fetchLibrary(path);
-      if (res) {
-        setFolders((prev) => {
-          const next = { ...prev };
-          let parentPath: string | null = null;
-          if (path) {
-            const parts = path.split('/');
-            parts.pop();
-            parentPath = parts.join('/');
-          }
-
-          next[path] = {
-            path,
-            name: path ? path.split('/').pop() || path : 'Kütüphane Ana Dizini',
-            parentPath,
-            subFolders: res.folders || [],
-            songs: res.songs || [],
-          };
-          return next;
-        });
+  // --- Command helpers ---
+  const runCommand = useCallback(
+    async (command: string): Promise<boolean> => {
+      const result = await sendMpdCommand(command);
+      if (result === null) {
+        showToast('MPD komutu başarısız oldu.');
+        return false;
       }
+      return true;
     },
-    [bridgeConnected, fetchLibrary]
+    [sendMpdCommand, showToast]
   );
 
-  // When connecting to real MPD, load root library and all songs
+  const runCommands = useCallback(
+    async (commands: string[]): Promise<boolean> => {
+      if (commands.length === 0) return true;
+      const ok = await sendMpdCommands(commands);
+      if (!ok) {
+        showToast('MPD komutları başarısız oldu.');
+        return false;
+      }
+      return true;
+    },
+    [sendMpdCommands, showToast]
+  );
+
+  /** Replaces the local queue with the playlist MPD reports. */
+  const applyQueue = useCallback((newQueue: Song[]) => {
+    const favorites = favoriteFilesRef.current;
+    const decorated = newQueue.map((s) =>
+      favorites.has(s.file) ? { ...s, isFavorite: true } : s
+    );
+
+    setQueue(decorated);
+
+    // Keep pointing at the song that is actually playing, even when the
+    // playlist shifted because of a move or a deletion.
+    const playingId = statusRef.current.songId;
+    if (playingId) {
+      const index = decorated.findIndex((s) => s.id === playingId);
+      if (index !== -1) {
+        setCurrentIndex(index);
+        return;
+      }
+    }
+    setCurrentIndex((prev) => Math.min(prev, Math.max(0, decorated.length - 1)));
+  }, []);
+
+  const refreshQueue = useCallback(async (): Promise<Song[] | null> => {
+    const mpdQueue = await fetchQueue();
+    if (mpdQueue) applyQueue(mpdQueue);
+    return mpdQueue;
+  }, [fetchQueue, applyQueue]);
+
+  // Sync queue from MPD when connected
   useEffect(() => {
     if (bridgeConnected) {
-      loadMpdPath('');
-      fetchAllSongs().then((songs) => {
-        if (songs && songs.length > 0) {
-          setFolders((prev) => {
-            const next = { ...prev };
-            if (!next['']) {
-              next[''] = {
-                path: '',
-                name: 'Kütüphane Ana Dizini',
-                parentPath: null,
-                subFolders: [],
-                songs: [],
-              };
-            }
-            return next;
-          });
-        }
-      });
+      refreshQueue();
     }
-  }, [bridgeConnected, loadMpdPath, fetchAllSongs]);
+  }, [bridgeConnected, refreshQueue]);
+
+  // The playlist length is reported with every status update - if it does
+  // not match the local queue, MPD changed it (consume mode, another
+  // client, ...) and we have to pull it again.
+  useEffect(() => {
+    if (!bridgeConnected) return;
+    if (typeof status.queueCount !== 'number') return;
+    if (status.queueCount !== queueRef.current.length) {
+      refreshQueue();
+    }
+  }, [status.queueCount, bridgeConnected, refreshQueue]);
+
+  // --- Library ---
+  const loadMpdPath = useCallback(
+    async (path: string) => {
+      const res = await fetchLibrary(path);
+      if (!res) return;
+
+      const favorites = favoriteFilesRef.current;
+      const songs: Song[] = (res.songs || []).map((s: Song) =>
+        favorites.has(s.file) ? { ...s, isFavorite: true } : s
+      );
+
+      setFolders((prev) => {
+        const next = { ...prev };
+        const parentPath = path ? path.split('/').slice(0, -1).join('/') : null;
+        next[path] = {
+          path,
+          name: path ? path.split('/').pop() || path : ROOT_FOLDER.name,
+          parentPath,
+          subFolders: res.folders || [],
+          songs,
+        };
+        return next;
+      });
+    },
+    [fetchLibrary]
+  );
+
+  // Load the library root and the whole database once, so the search covers
+  // every track and not only the folders that were opened before.
+  useEffect(() => {
+    if (!bridgeConnected) return;
+    let cancelled = false;
+
+    loadMpdPath('');
+
+    fetchAllSongs().then((songs) => {
+      if (cancelled || !songs) return;
+      const favorites = favoriteFilesRef.current;
+      setLibrarySongs(
+        songs.map((s) => (favorites.has(s.file) ? { ...s, isFavorite: true } : s))
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridgeConnected, fetchAllSongs, loadMpdPath]);
 
   // Handle navigate inside library tab
   const handleNavigateToPath = useCallback(
@@ -205,262 +304,156 @@ export default function App() {
     [bridgeConnected, loadMpdPath]
   );
 
-  // Collect all songs in the library for search
-  const allLibrarySongs = React.useMemo(() => {
-    const list: Song[] = [];
-    const seen = new Set<string>();
-    (Object.values(folders) as LibraryFolder[]).forEach((folder) => {
-      folder.songs.forEach((s) => {
-        if (!seen.has(s.id)) {
-          seen.add(s.id);
-          list.push(s);
-        }
-      });
-    });
-    return list;
-  }, [folders]);
-
-  // --- Real-time Playback Ticker ---
-  useEffect(() => {
-    if (status.state !== 'play') return;
-
-    const interval = setInterval(() => {
-      setStatus((prev) => {
-        const curDuration = currentSong?.duration || 180;
-        const nextElapsed = prev.elapsed + 1;
-
-        if (nextElapsed >= curDuration) {
-          // Track ended
-          if (prev.single) {
-            return { ...prev, elapsed: 0 };
-          }
-          // Move to next song
-          setTimeout(() => handleNext(), 0);
-          return { ...prev, elapsed: 0 };
-        }
-
-        return { ...prev, elapsed: nextElapsed };
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [status.state, currentSong?.duration, status.single]);
-
-  // Sync currentSong duration to status
-  useEffect(() => {
-    if (currentSong) {
-      setStatus((prev) => ({
-        ...prev,
-        songId: currentSong.id,
-        duration: currentSong.duration,
-        queueCount: queue.length,
-      }));
-    }
-  }, [currentSong, queue.length]);
-
-  // --- Controls Handlers ---
-  const handlePlay = useCallback(() => {
-    if (queue.length === 0) return;
-    const song = queue[currentIndex];
-    setStatus((prev) => ({ ...prev, state: 'play' }));
-    if (song) {
-      audioEngine.play(song, status.elapsed);
-    }
-    if (bridgeConnected) {
-      sendMpdCommand('play');
-    }
-  }, [queue, currentIndex, status.elapsed, bridgeConnected, sendMpdCommand]);
-
-  const handlePause = useCallback(() => {
-    setStatus((prev) => ({ ...prev, state: 'pause' }));
-    audioEngine.pause();
-    if (bridgeConnected) {
-      sendMpdCommand('pause 1');
-    }
-  }, [bridgeConnected, sendMpdCommand]);
-
-  const handleStop = useCallback(() => {
-    setStatus((prev) => ({ ...prev, state: 'stop', elapsed: 0 }));
-    audioEngine.stop();
-    if (bridgeConnected) {
-      sendMpdCommand('stop');
-    }
-  }, [bridgeConnected, sendMpdCommand]);
-
-  const handleNext = useCallback(() => {
-    if (queue.length === 0) return;
-
-    let nextIdx = currentIndex + 1;
-    if (status.random) {
-      nextIdx = Math.floor(Math.random() * queue.length);
-    } else if (nextIdx >= queue.length) {
-      if (status.repeat) {
-        nextIdx = 0;
-      } else {
-        handleStop();
-        return;
-      }
-    }
-
-    const nextSong = queue[nextIdx];
-    setCurrentIndex(nextIdx);
-    setStatus((prev) => ({
-      ...prev,
-      elapsed: 0,
-      state: 'play',
-      songIndex: nextIdx,
-      songId: nextSong ? nextSong.id : '',
-      duration: nextSong ? nextSong.duration : 0,
-    }));
-
-    if (nextSong) {
-      audioEngine.play(nextSong, 0);
-    }
-
-    if (bridgeConnected) {
-      sendMpdCommand('next');
-    }
-  }, [queue, currentIndex, status.random, status.repeat, handleStop, bridgeConnected, sendMpdCommand]);
-
-  const handlePrev = useCallback(() => {
-    if (queue.length === 0) return;
-
-    // If more than 3 seconds in, restart track
-    if (status.elapsed > 3) {
-      setStatus((prev) => ({ ...prev, elapsed: 0 }));
-      if (currentSong && status.state === 'play') {
-        audioEngine.play(currentSong, 0);
-      }
-      if (bridgeConnected && currentSong) {
-        sendMpdCommand('seekcur 0');
-      }
+  // --- Playback controls (all state lives in MPD) ---
+  const handlePlay = useCallback(async () => {
+    if (!bridgeConnected) {
+      showToast('MPD bağlantısı yok.');
       return;
     }
-
-    let prevIdx = currentIndex - 1;
-    if (prevIdx < 0) {
-      prevIdx = status.repeat ? queue.length - 1 : 0;
+    if (statusRef.current.state === 'pause') {
+      setStatus((prev) => ({ ...prev, state: 'play' }));
+      await runCommand(mpdCommands.pause(false));
+    } else {
+      await runCommand(mpdCommands.play());
     }
+  }, [bridgeConnected, runCommand, showToast]);
 
-    const prevSong = queue[prevIdx];
-    setCurrentIndex(prevIdx);
-    setStatus((prev) => ({
-      ...prev,
-      elapsed: 0,
-      state: 'play',
-      songIndex: prevIdx,
-      songId: prevSong ? prevSong.id : '',
-      duration: prevSong ? prevSong.duration : 0,
-    }));
+  const handlePause = useCallback(async () => {
+    if (!bridgeConnected) return;
+    setStatus((prev) => ({ ...prev, state: 'pause' }));
+    await runCommand(mpdCommands.pause(true));
+  }, [bridgeConnected, runCommand]);
 
-    if (prevSong) {
-      audioEngine.play(prevSong, 0);
+  const handleStop = useCallback(async () => {
+    if (!bridgeConnected) return;
+    setStatus((prev) => ({ ...prev, state: 'stop', elapsed: 0 }));
+    await runCommand(mpdCommands.stop());
+  }, [bridgeConnected, runCommand]);
+
+  const handleNext = useCallback(async () => {
+    if (!bridgeConnected) return;
+    await runCommand(mpdCommands.next());
+  }, [bridgeConnected, runCommand]);
+
+  const handlePrev = useCallback(async () => {
+    if (!bridgeConnected) return;
+    // Like ncmpcpp: more than three seconds into a track means "restart it".
+    if (statusRef.current.elapsed > 3) {
+      setStatus((prev) => ({ ...prev, elapsed: 0 }));
+      await runCommand(mpdCommands.seek(0));
+    } else {
+      await runCommand(mpdCommands.previous());
     }
+  }, [bridgeConnected, runCommand]);
 
-    if (bridgeConnected) {
-      sendMpdCommand('previous');
-    }
-  }, [queue, currentIndex, status.elapsed, status.repeat, status.state, currentSong, bridgeConnected, sendMpdCommand]);
-
-  // Audio Engine end of track trigger
-  useEffect(() => {
-    audioEngine.setEndCallback(() => {
-      handleNext();
-    });
-  }, [handleNext]);
-
-  const handleSeek = (seconds: number) => {
-    const sec = Math.max(0, Math.floor(seconds));
-    setStatus((prev) => ({ ...prev, elapsed: sec }));
-    if (currentSong && status.state === 'play') {
-      audioEngine.play(currentSong, sec);
-    }
-    if (bridgeConnected && currentSong) {
-      sendMpdCommand(`seekcur ${sec}`);
-    }
-  };
-
-  const handleToggleRandom = () => {
-    setStatus((prev) => {
-      const next = !prev.random;
+  const handleSeek = useCallback(
+    async (seconds: number) => {
+      const sec = Math.max(0, Math.floor(seconds));
+      setStatus((prev) => ({ ...prev, elapsed: sec }));
       if (bridgeConnected) {
-        sendMpdCommand(`random ${next ? 1 : 0}`);
+        await runCommand(mpdCommands.seek(sec));
       }
-      showToast(next ? 'Rastgele Çalma Açık' : 'Rastgele Çalma Kapalı');
-      return { ...prev, random: next };
-    });
-  };
+    },
+    [bridgeConnected, runCommand]
+  );
 
-  const handleToggleRepeat = () => {
-    setStatus((prev) => {
-      const next = !prev.repeat;
-      if (bridgeConnected) {
-        sendMpdCommand(`repeat ${next ? 1 : 0}`);
-      }
-      showToast(next ? 'Tekrar Modu Açık' : 'Tekrar Modu Kapalı');
-      return { ...prev, repeat: next };
-    });
-  };
+  const handlePlaySongAt = useCallback(
+    async (index: number) => {
+      if (index < 0 || index >= queueRef.current.length) return;
+      if (!bridgeConnected) return;
+      setCurrentIndex(index);
+      setStatus((prev) => ({ ...prev, state: 'play', elapsed: 0 }));
+      await runCommand(mpdCommands.play(index));
+    },
+    [bridgeConnected, runCommand]
+  );
 
-  const handleToggleSingle = () => {
-    setStatus((prev) => {
-      const next = !prev.single;
-      if (bridgeConnected) {
-        sendMpdCommand(`single ${next ? 1 : 0}`);
-      }
-      showToast(next ? 'Tek Şarkı Modu Açık' : 'Tek Şarkı Modu Kapalı');
-      return { ...prev, single: next };
-    });
-  };
+  // --- MPD modes ---
+  const handleToggleRandom = useCallback(async () => {
+    const next = !statusRef.current.random;
+    setStatus((prev) => ({ ...prev, random: next }));
+    if (bridgeConnected) await runCommand(mpdCommands.random(next));
+    showToast(next ? 'Rastgele Çalma Açık' : 'Rastgele Çalma Kapalı');
+  }, [bridgeConnected, runCommand, showToast]);
 
-  const handleToggleConsume = () => {
-    setStatus((prev) => {
-      const next = !prev.consume;
-      if (bridgeConnected) {
-        sendMpdCommand(`consume ${next ? 1 : 0}`);
-      }
-      showToast(next ? 'Tüketim Modu (Consume) Açık' : 'Tüketim Modu Kapalı');
-      return { ...prev, consume: next };
-    });
-  };
+  const handleToggleRepeat = useCallback(async () => {
+    const next = !statusRef.current.repeat;
+    setStatus((prev) => ({ ...prev, repeat: next }));
+    if (bridgeConnected) await runCommand(mpdCommands.repeat(next));
+    showToast(next ? 'Tekrar Modu Açık' : 'Tekrar Modu Kapalı');
+  }, [bridgeConnected, runCommand, showToast]);
 
-  const handleToggleFavorite = (id: string) => {
-    setQueue((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, isFavorite: !s.isFavorite } : s))
-    );
-  };
+  const handleToggleSingle = useCallback(async () => {
+    const next = !statusRef.current.single;
+    setStatus((prev) => ({ ...prev, single: next }));
+    if (bridgeConnected) await runCommand(mpdCommands.single(next));
+    showToast(next ? 'Tek Şarkı Modu Açık' : 'Tek Şarkı Modu Kapalı');
+  }, [bridgeConnected, runCommand, showToast]);
 
-  const handleVolumeChange = (vol: number) => {
-    setIsMuted(false);
-    setStatus((prev) => ({ ...prev, volume: vol }));
-    audioEngine.setVolume(vol);
-    if (bridgeConnected) {
-      sendMpdCommand(`setvol ${vol}`);
-    }
-  };
+  const handleToggleConsume = useCallback(async () => {
+    const next = !statusRef.current.consume;
+    setStatus((prev) => ({ ...prev, consume: next }));
+    if (bridgeConnected) await runCommand(mpdCommands.consume(next));
+    showToast(next ? 'Tüketim Modu (Consume) Açık' : 'Tüketim Modu Kapalı');
+  }, [bridgeConnected, runCommand, showToast]);
 
-  const handleToggleMute = () => {
-    if (isMuted) {
+  // --- Volume ---
+  const handleVolumeChange = useCallback(
+    async (vol: number) => {
+      const clamped = Math.max(0, Math.min(100, Math.round(vol)));
       setIsMuted(false);
-      const restoreVol = savedVolume || 75;
-      setStatus((prev) => ({ ...prev, volume: restoreVol }));
-      audioEngine.setVolume(restoreVol);
+      setStatus((prev) => ({ ...prev, volume: clamped }));
       if (bridgeConnected) {
-        sendMpdCommand(`setvol ${restoreVol}`);
+        await runCommand(mpdCommands.setVolume(clamped));
+      }
+    },
+    [bridgeConnected, runCommand]
+  );
+
+  const handleToggleMute = useCallback(async () => {
+    if (isMuted) {
+      const restoreVol = savedVolume || 75;
+      setIsMuted(false);
+      setStatus((prev) => ({ ...prev, volume: restoreVol }));
+      if (bridgeConnected) {
+        await runCommand(mpdCommands.setVolume(restoreVol));
       }
     } else {
-      setSavedVolume(status.volume);
+      setSavedVolume(statusRef.current.volume);
       setIsMuted(true);
       setStatus((prev) => ({ ...prev, volume: 0 }));
-      audioEngine.setVolume(0);
       if (bridgeConnected) {
-        sendMpdCommand('setvol 0');
+        await runCommand(mpdCommands.setVolume(0));
       }
     }
-  };
+  }, [isMuted, savedVolume, bridgeConnected, runCommand]);
 
-  // --- Queue Selection & Batch Actions ---
-  const handleSelectSong = (id: string, _multiSelect = false) => {
+  // --- Favorites (local, keyed by file path so they survive a refetch) ---
+  const handleToggleFavorite = useCallback((song: Song) => {
+    const favorites = new Set(favoriteFilesRef.current);
+    if (favorites.has(song.file)) {
+      favorites.delete(song.file);
+    } else {
+      favorites.add(song.file);
+    }
+    favoriteFilesRef.current = favorites;
+
+    const toggle = (s: Song) =>
+      s.file === song.file ? { ...s, isFavorite: favorites.has(s.file) } : s;
+
+    setQueue((prev) => prev.map(toggle));
+    setLibrarySongs((prev) => prev.map(toggle));
+    setFolders((prev) => {
+      const next = { ...prev };
+      for (const key of Object.keys(next)) {
+        next[key] = { ...next[key], songs: next[key].songs.map(toggle) };
+      }
+      return next;
+    });
+  }, []);
+
+  // --- Queue selection ---
+  const handleSelectSong = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -470,282 +463,253 @@ export default function App() {
       }
       return next;
     });
-  };
+  }, []);
 
-  const handleSelectAll = () => {
-    setSelectedIds(new Set(queue.map((s) => s.id)));
-  };
+  const handleSelectAll = useCallback(() => {
+    setSelectedIds(new Set(queueRef.current.map((s) => s.id)));
+  }, []);
 
-  const handleClearSelection = () => {
+  const handleClearSelection = useCallback(() => {
     setSelectedIds(new Set());
-  };
+  }, []);
 
-  const handlePlaySongAt = (index: number) => {
-    if (index < 0 || index >= queue.length) return;
-    const targetSong = queue[index];
-    setCurrentIndex(index);
-    setStatus((prev) => ({
-      ...prev,
-      elapsed: 0,
-      state: 'play',
-      songIndex: index,
-      songId: targetSong ? targetSong.id : '',
-      duration: targetSong ? targetSong.duration : 0,
-    }));
+  // --- Queue mutations (all of them end up in MPD) ---
+  const handleRemoveSong = useCallback(
+    async (id: string) => {
+      const list = queueRef.current;
+      const position = list.findIndex((s) => s.id === id);
+      if (position === -1) return;
 
-    if (targetSong) {
-      audioEngine.play(targetSong, 0);
-    }
+      // MPD addresses songs by their 0-based playlist position.
+      const ok = await runCommand(mpdCommands.deleteAt(position));
+      if (!ok) return;
 
-    if (bridgeConnected) {
-      sendMpdCommand(`play ${index}`);
-    }
-  };
-
-  const handleRemoveSong = (id: string) => {
-    const songIndex = queue.findIndex((s) => s.id === id);
-    if (songIndex === -1) return;
-
-    setQueue((prev) => prev.filter((s) => s.id !== id));
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
-
-    if (songIndex === currentIndex) {
-      if (queue.length <= 1) {
-        handleStop();
-      } else if (currentIndex >= queue.length - 1) {
-        setCurrentIndex(queue.length - 2);
-        setStatus((prev) => ({ ...prev, elapsed: 0 }));
-      }
-    } else if (songIndex < currentIndex) {
-      setCurrentIndex((prev) => prev - 1);
-    }
-  };
-
-  const handleQueueNextSong = (id: string) => {
-    const songToMove = queue.find((s) => s.id === id);
-    if (!songToMove) return;
-
-    const remaining = queue.filter((s) => s.id !== id);
-    const insertPos = currentIndex + 1;
-    remaining.splice(insertPos, 0, songToMove);
-
-    setQueue(remaining);
-    showToast(`"${songToMove.title}" sıradaki parça yapıldı.`);
-  };
-
-  // Batch delete selected songs
-  const handleBatchDelete = () => {
-    if (selectedIds.size === 0) return;
-    const count = selectedIds.size;
-    const currentPlayingId = queue[currentIndex]?.id;
-
-    const nextQueue = queue.filter((s) => !selectedIds.has(s.id));
-    setQueue(nextQueue);
-    setSelectedIds(new Set());
-
-    // Recalculate current index
-    if (nextQueue.length === 0) {
-      handleStop();
-      setCurrentIndex(0);
-    } else {
-      const newCurrentIdx = nextQueue.findIndex((s) => s.id === currentPlayingId);
-      if (newCurrentIdx !== -1) {
-        setCurrentIndex(newCurrentIdx);
-      } else {
-        setCurrentIndex(Math.min(currentIndex, nextQueue.length - 1));
-      }
-    }
-    showToast(`${count} parça kuyruktan silindi.`);
-  };
-
-  // Batch move selected items UP (Shift+K)
-  const handleBatchMoveUp = () => {
-    if (selectedIds.size === 0) return;
-    const currentPlayingId = queue[currentIndex]?.id;
-    const newQueue = [...queue];
-
-    for (let i = 1; i < newQueue.length; i++) {
-      if (selectedIds.has(newQueue[i].id) && !selectedIds.has(newQueue[i - 1].id)) {
-        const temp = newQueue[i];
-        newQueue[i] = newQueue[i - 1];
-        newQueue[i - 1] = temp;
-      }
-    }
-
-    setQueue(newQueue);
-    const newPlayingIdx = newQueue.findIndex((s) => s.id === currentPlayingId);
-    if (newPlayingIdx !== -1) setCurrentIndex(newPlayingIdx);
-  };
-
-  // Batch move selected items DOWN (Shift+J)
-  const handleBatchMoveDown = () => {
-    if (selectedIds.size === 0) return;
-    const currentPlayingId = queue[currentIndex]?.id;
-    const newQueue = [...queue];
-
-    for (let i = newQueue.length - 2; i >= 0; i--) {
-      if (selectedIds.has(newQueue[i].id) && !selectedIds.has(newQueue[i + 1].id)) {
-        const temp = newQueue[i];
-        newQueue[i] = newQueue[i + 1];
-        newQueue[i + 1] = temp;
-      }
-    }
-
-    setQueue(newQueue);
-    const newPlayingIdx = newQueue.findIndex((s) => s.id === currentPlayingId);
-    if (newPlayingIdx !== -1) setCurrentIndex(newPlayingIdx);
-  };
-
-  // Batch Queue Next (ö / ⏭)
-  const handleBatchQueueNext = () => {
-    if (selectedIds.size === 0) return;
-    const selectedList = queue.filter((s) => selectedIds.has(s.id));
-    const nonSelected = queue.filter((s) => !selectedIds.has(s.id));
-    const currentPlayingId = queue[currentIndex]?.id;
-
-    const currentInNonSelected = nonSelected.findIndex((s) => s.id === currentPlayingId);
-    const insertPos = currentInNonSelected !== -1 ? currentInNonSelected + 1 : 0;
-
-    nonSelected.splice(insertPos, 0, ...selectedList);
-    setQueue(nonSelected);
-
-    const newIdx = nonSelected.findIndex((s) => s.id === currentPlayingId);
-    if (newIdx !== -1) setCurrentIndex(newIdx);
-
-    showToast(`${selectedList.length} parça sıradaki yapıldı.`);
-  };
-
-  // Clear entire queue
-  const handleClearQueue = () => {
-    if (window.confirm('Çalma listesi sıfırlansın mı?')) {
-      setQueue([]);
-      setSelectedIds(new Set());
-      handleStop();
-      showToast('Çalma listesi temizlendi.');
-    }
-  };
-
-  // --- Library Actions ---
-  const handleAddSongToQueue = async (song: Song) => {
-    if (bridgeConnected) {
-      if (song.file) {
-        await sendMpdCommand(`add "${song.file.replace(/"/g, '\\"')}"`);
-        const updatedQueue = await fetchQueue();
-        if (updatedQueue) setQueue(updatedQueue);
-      }
-    } else {
-      const newSong = { ...song, id: `queue-${Date.now()}-${Math.random().toString(36).substring(2, 6)}` };
-      setQueue((prev) => [...prev, newSong]);
-    }
-    showToast(`"${song.title}" kuyruğa eklendi.`);
-  };
-
-  const handlePlaySongNow = async (song: Song) => {
-    if (bridgeConnected) {
-      if (song.file) {
-        await sendMpdCommand(`add "${song.file.replace(/"/g, '\\"')}"`);
-        const updatedQueue = await fetchQueue();
-        if (updatedQueue) {
-          setQueue(updatedQueue);
-          const lastIdx = updatedQueue.length - 1;
-          await sendMpdCommand(`play ${lastIdx}`);
-          handlePlaySongAt(lastIdx);
-        }
-      }
-    } else {
-      const newSong = { ...song, id: `queue-${Date.now()}-${Math.random().toString(36).substring(2, 6)}` };
-      const nextIdx = currentIndex + 1;
-      setQueue((prev) => {
-        const next = [...prev];
-        next.splice(nextIdx, 0, newSong);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
         return next;
       });
-      setCurrentIndex(nextIdx);
-      setStatus((prev) => ({
-        ...prev,
-        elapsed: 0,
-        state: 'play',
-        songIndex: nextIdx,
-        songId: newSong.id,
-        duration: newSong.duration,
-      }));
-      audioEngine.play(newSong, 0);
-    }
-    showToast(`"${song.title}" çalınıyor.`);
-  };
+      await refreshQueue();
+    },
+    [runCommand, refreshQueue]
+  );
 
-  const handleAddAllToQueue = async (songsToAdd: Song[]) => {
-    if (bridgeConnected) {
-      for (const s of songsToAdd) {
-        if (s.file) {
-          await sendMpdCommand(`add "${s.file.replace(/"/g, '\\"')}"`);
-        }
+  const handleQueueNextSong = useCallback(
+    async (id: string) => {
+      const list = queueRef.current;
+      const from = list.findIndex((s) => s.id === id);
+      if (from === -1) return;
+
+      const target = Math.min(currentIndex + 1, list.length - 1);
+      if (from === target) {
+        showToast('Parça zaten sıradaki konumda.');
+        return;
       }
-      const updatedQueue = await fetchQueue();
-      if (updatedQueue) setQueue(updatedQueue);
-    } else {
-      const newSongs = songsToAdd.map((s) => ({
-        ...s,
-        id: `queue-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      }));
-      setQueue((prev) => [...prev, ...newSongs]);
-    }
-    showToast(`${songsToAdd.length} parça kuyruğa eklendi.`);
-  };
 
-  // Add an entire folder to queue directly in MPD
-  const handleAddFolderToQueue = async (folderPath: string) => {
-    const folderName = folderPath.split('/').pop() || folderPath;
-    if (bridgeConnected) {
-      // In MPD, add "<path>" adds all files recursively inside that folder!
-      const res = await sendMpdCommand(`add "${folderPath.replace(/"/g, '\\"')}"`);
-      const updatedQueue = await fetchQueue();
-      if (updatedQueue) setQueue(updatedQueue);
+      const ok = await runCommand(mpdCommands.move(from, target));
+      if (!ok) return;
+
+      await refreshQueue();
+      showToast(`"${list[from].title}" sıradaki parça yapıldı.`);
+    },
+    [currentIndex, runCommand, refreshQueue, showToast]
+  );
+
+  const handleBatchDelete = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+
+    const commands = buildDeleteCommands(queueRef.current, selectedIds);
+    if (commands.length === 0) {
+      showToast('Silinecek parça bulunamadı.');
+      return;
+    }
+
+    const ok = await runCommands(commands);
+    if (!ok) return;
+
+    setSelectedIds(new Set());
+    await refreshQueue();
+    showToast(`${commands.length} parça kuyruktan silindi.`);
+  }, [selectedIds, runCommands, refreshQueue, showToast]);
+
+  const handleBatchMoveUp = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+
+    const commands = buildMoveCommands(queueRef.current, selectedIds, 'up');
+    if (commands.length === 0) return;
+
+    const ok = await runCommands(commands);
+    if (!ok) return;
+
+    await refreshQueue();
+  }, [selectedIds, runCommands, refreshQueue]);
+
+  const handleBatchMoveDown = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+
+    const commands = buildMoveCommands(queueRef.current, selectedIds, 'down');
+    if (commands.length === 0) return;
+
+    const ok = await runCommands(commands);
+    if (!ok) return;
+
+    await refreshQueue();
+  }, [selectedIds, runCommands, refreshQueue]);
+
+  const handleBatchQueueNext = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+
+    const commands = buildQueueNextCommands(
+      queueRef.current,
+      selectedIds,
+      currentIndex + 1
+    );
+    if (commands.length === 0) return;
+
+    const ok = await runCommands(commands);
+    if (!ok) return;
+
+    await refreshQueue();
+    showToast(`${selectedIds.size} parça sıradaki yapıldı.`);
+  }, [selectedIds, currentIndex, runCommands, refreshQueue, showToast]);
+
+  const handleClearQueue = useCallback(async () => {
+    if (!window.confirm('Çalma listesi sıfırlansın mı?')) return;
+
+    const ok = await runCommand(mpdCommands.clear());
+    if (!ok) return;
+
+    setSelectedIds(new Set());
+    await refreshQueue();
+    showToast('Çalma listesi temizlendi.');
+  }, [runCommand, refreshQueue, showToast]);
+
+  // --- Library actions ---
+  const handleAddSongToQueue = useCallback(
+    async (song: Song) => {
+      if (!song.file) return;
+
+      const ok = await runCommand(mpdCommands.add(song.file));
+      if (!ok) return;
+
+      await refreshQueue();
+      showToast(`"${song.title}" kuyruğa eklendi.`);
+    },
+    [runCommand, refreshQueue, showToast]
+  );
+
+  const handlePlaySongNow = useCallback(
+    async (song: Song) => {
+      if (!song.file) return;
+
+      const ok = await runCommand(mpdCommands.add(song.file));
+      if (!ok) return;
+
+      const updated = await refreshQueue();
+      if (updated && updated.length > 0) {
+        await runCommand(mpdCommands.play(updated.length - 1));
+      }
+      showToast(`"${song.title}" çalınıyor.`);
+    },
+    [runCommand, refreshQueue, showToast]
+  );
+
+  const handleAddAllToQueue = useCallback(
+    async (songsToAdd: Song[]) => {
+      const files = songsToAdd.map((s) => s.file).filter(Boolean);
+      if (files.length === 0) return;
+
+      const ok = await runCommands(files.map((f) => mpdCommands.add(f)));
+      if (!ok) return;
+
+      await refreshQueue();
+      showToast(`${files.length} parça kuyruğa eklendi.`);
+    },
+    [runCommands, refreshQueue, showToast]
+  );
+
+  const handleAddFolderToQueue = useCallback(
+    async (folderPath: string) => {
+      const folderName = folderPath.split('/').pop() || folderPath;
+
+      // In MPD, `add "<path>"` adds every file below that directory.
+      const ok = await runCommand(mpdCommands.add(folderPath));
+      if (!ok) return;
+
+      await refreshQueue();
       showToast(`"${folderName}" klasörü sıraya eklendi.`);
-    } else {
-      const folder = folders[folderPath];
-      if (folder && folder.songs.length > 0) {
-        handleAddAllToQueue(folder.songs);
-      } else {
-        showToast(`"${folderName}" klasörü eklendi.`);
-      }
-    }
-  };
+    },
+    [runCommand, refreshQueue, showToast]
+  );
 
   // --- Database Update ---
-  const handleUpdateDb = async () => {
-    setIsUpdatingDb(true);
-    if (bridgeConnected) {
-      await sendMpdCommand('update');
-      showToast('MPD "update" komutu gönderildi.');
-    } else {
+  const handleUpdateDb = useCallback(async () => {
+    if (!bridgeConnected) {
       showToast('MPD bağlantısı bulunamadı.');
+      return;
     }
-    setTimeout(() => {
-      setIsUpdatingDb(false);
-    }, 1000);
-  };
 
-  const handleConfigChange = async (newConfig: MpdConfig) => {
-    setConfig(newConfig);
-    try {
-      localStorage.setItem('fmpd_config', JSON.stringify(newConfig));
-    } catch {}
-    await connectBridge(newConfig.host, newConfig.port, newConfig.password);
-  };
+    setIsUpdatingDb(true);
+    const ok = await runCommand(mpdCommands.update());
+    showToast(
+      ok
+        ? 'MPD "update" komutu gönderildi.'
+        : 'MPD "update" komutu başarısız oldu.'
+    );
+    setTimeout(() => setIsUpdatingDb(false), 1000);
+  }, [bridgeConnected, runCommand, showToast]);
+
+  // --- Settings ---
+  const handleConfigChange = useCallback(
+    async (newConfig: MpdConfig) => {
+      setConfig(newConfig);
+      try {
+        localStorage.setItem('fmpd_config', JSON.stringify(newConfig));
+      } catch {}
+      await connectBridge(newConfig.host, newConfig.port, newConfig.password);
+    },
+    [connectBridge]
+  );
 
   // --- Save Playlist ---
-  const handleSavePlaylist = (name: string) => {
-    showToast(`"${name}" çalma listesi başarıyla kaydedildi.`);
-  };
+  const handleSavePlaylist = useCallback(
+    async (name: string) => {
+      const ok = await runCommand(mpdCommands.savePlaylist(name));
+      if (!ok) return;
+      showToast(`"${name}" çalma listesi MPD'ye kaydedildi.`);
+    },
+    [runCommand, showToast]
+  );
 
   // --- Keyboard Shortcuts (ncmpcpp style) ---
+  const actions = {
+    handlePlay,
+    handlePause,
+    handleStop,
+    handleNext,
+    handlePrev,
+    handleToggleRandom,
+    handleToggleRepeat,
+    handleToggleSingle,
+    handleToggleConsume,
+    handleBatchDelete,
+    handleClearQueue,
+    handleBatchQueueNext,
+    handleBatchMoveUp,
+    handleBatchMoveDown,
+  };
+
+  // Keep the latest handlers available without re-registering the listener
+  // on every render.
+  useEffect(() => {
+    actionsRef.current = actions as unknown as Record<string, (...args: any[]) => void>;
+  });
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const current = actionsRef.current;
+      if (!current) return;
+
       // Don't trigger if typing in an input
       if (
         ['INPUT', 'TEXTAREA', 'SELECT'].includes(
@@ -761,58 +725,64 @@ export default function App() {
       switch (e.key) {
         case ' ':
           e.preventDefault();
-          status.state === 'play' ? handlePause() : handlePlay();
+          if (statusRef.current.state === 'play') current.handlePause();
+          else current.handlePlay();
           break;
         case 'b':
         case 'B':
           e.preventDefault();
-          handlePrev();
+          current.handlePrev();
           break;
         case 'n':
         case 'N':
           e.preventDefault();
-          handleNext();
+          current.handleNext();
+          break;
+        case 's':
+        case 'S':
+          e.preventDefault();
+          current.handleStop();
           break;
         case 'z':
           e.preventDefault();
-          handleToggleRandom();
+          current.handleToggleRandom();
           break;
         case 'r':
           e.preventDefault();
-          handleToggleRepeat();
+          current.handleToggleRepeat();
           break;
         case 'y':
           e.preventDefault();
-          handleToggleSingle();
+          current.handleToggleSingle();
           break;
         case 'x':
           e.preventDefault();
-          handleToggleConsume();
+          current.handleToggleConsume();
           break;
         case 'd':
         case 'Delete':
           e.preventDefault();
-          handleBatchDelete();
+          current.handleBatchDelete();
           break;
         case 'c':
           e.preventDefault();
-          handleClearQueue();
+          current.handleClearQueue();
           break;
         case 'ö':
         case ']':
           e.preventDefault();
-          handleBatchQueueNext();
+          current.handleBatchQueueNext();
           break;
         case 'J':
           if (e.shiftKey) {
             e.preventDefault();
-            handleBatchMoveDown();
+            current.handleBatchMoveDown();
           }
           break;
         case 'K':
           if (e.shiftKey) {
             e.preventDefault();
-            handleBatchMoveUp();
+            current.handleBatchMoveUp();
           }
           break;
         case '/':
@@ -833,7 +803,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  });
+  }, []);
 
   return (
     <div className="min-h-screen bg-[#1e1e2e] text-[#cdd6f4] flex flex-col font-['Quicksand'] pb-28 sm:pb-32 md:pb-28 selection:bg-[#fab387]/30 selection:text-[#fab387]">
@@ -880,7 +850,7 @@ export default function App() {
             currentPath={currentPath}
             folders={folders}
             searchQuery={searchQuery}
-            allSongs={allLibrarySongs}
+            allSongs={librarySongs}
             onNavigateTo={handleNavigateToPath}
             onAddSongToQueue={handleAddSongToQueue}
             onPlaySongNow={handlePlaySongNow}
