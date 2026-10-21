@@ -45,7 +45,6 @@ export interface LibraryFolder {
 export interface MpdConfig {
   host: string;
   port: number;
-  wsUrl: string;
   password?: string;
   connected: boolean;
 }

@@ -26,7 +26,7 @@ interface QueueViewProps {
   onPause?: () => void;
   onRemoveSong: (id: string) => void;
   onQueueNextSong: (id: string) => void;
-  onToggleFavorite: (id: string) => void;
+  onToggleFavorite: (song: Song) => void;
   onGoToLibrary: () => void;
 }
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Settings, Server, Check, Info } from 'lucide-react';
+import { X, Settings, Check, Info } from 'lucide-react';
 import { MpdConfig } from '../../types';
 
 interface SettingsModalProps {
@@ -18,7 +18,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [host, setHost] = useState(config.host);
   const [port, setPort] = useState(config.port.toString());
   const [password, setPassword] = useState(config.password || '');
-  const [wsUrl, setWsUrl] = useState(config.wsUrl || 'ws://localhost:8080/ws');
   const [saved, setSaved] = useState(false);
 
   if (!isOpen) return null;
@@ -29,7 +28,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       host: host.trim() || 'localhost',
       port: parseInt(port, 10) || 6600,
       password: password.trim(),
-      wsUrl: wsUrl.trim(),
       connected: true,
     });
     setSaved(true);

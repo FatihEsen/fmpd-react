@@ -13,11 +13,14 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
     { key: 'Space', desc: 'Oynat / Duraklat' },
     { key: 'B', desc: 'Önceki Parça' },
     { key: 'N', desc: 'Sonraki Parça' },
+    { key: 'S', desc: 'Durdur' },
     { key: 'z', desc: 'Rastgele Çalma Modu (Shuffle)' },
     { key: 'r', desc: 'Tekrar Modu (Repeat)' },
     { key: 'y', desc: 'Tek Şarkı Modu (Single)' },
     { key: 'x', desc: 'Tüketim Modu (Consume - çalınanı sil)' },
-    { key: 'j / k', desc: 'Listede Aşağı / Yukarı Gezinme' },
+    { key: 'm', desc: 'Sesi Kapat / Aç' },
+    { key: '+ / -', desc: 'Ses Seviyesini +/- 5 Yap' },
+    { key: '← / →', desc: '5 saniye geri / ileri sar' },
     { key: 'Shift + J', desc: 'Seçilen Parçaları Aşağı Taşı' },
     { key: 'Shift + K', desc: 'Seçilen Parçaları Yukarı Taşı' },
     { key: 'ö / ]', desc: 'Seçilen Parçayı Sıradaki Yap (Queue Next)' },
@@ -25,7 +28,7 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
     { key: 'c', desc: 'Kuyruğu Temizle' },
     { key: '/', desc: 'Arama Kutusuna Odaklan' },
     { key: '?', desc: 'Bu Kısayollar Penceresini Aç' },
-    { key: 'Esc', desc: 'Pencereleri veya Aramayı Kapat' },
+    { key: 'Esc', desc: 'Pencereleri Kapat' },
   ];
 
   return (

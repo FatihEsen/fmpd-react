@@ -11,7 +11,7 @@
  * open modals, ...).
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Song,
   MpdStatus,
@@ -75,7 +75,6 @@ export default function App() {
           host: parsed.host || 'localhost',
           port: parsed.port || 6600,
           password: parsed.password || '',
-          wsUrl: parsed.wsUrl || '',
           connected: false,
         };
       }
@@ -83,7 +82,6 @@ export default function App() {
     return {
       host: 'localhost',
       port: 6600,
-      wsUrl: '',
       connected: false,
     };
   });
@@ -160,7 +158,6 @@ export default function App() {
   // Native MPD Bridge integration hook
   const {
     bridgeConnected,
-    isConnecting,
     connectBridge,
     sendMpdCommand,
     sendMpdCommands,
@@ -348,7 +345,9 @@ export default function App() {
 
   const handleSeek = useCallback(
     async (seconds: number) => {
-      const sec = Math.max(0, Math.floor(seconds));
+      const duration = statusRef.current.duration;
+      const wanted = Math.floor(seconds);
+      const sec = Math.max(0, duration > 0 ? Math.min(wanted, duration) : wanted);
       setStatus((prev) => ({ ...prev, elapsed: sec }));
       if (bridgeConnected) {
         await runCommand(mpdCommands.seek(sec));
@@ -692,11 +691,14 @@ export default function App() {
     handleToggleRepeat,
     handleToggleSingle,
     handleToggleConsume,
+    handleToggleMute,
     handleBatchDelete,
     handleClearQueue,
     handleBatchQueueNext,
     handleBatchMoveUp,
     handleBatchMoveDown,
+    handleSeek,
+    handleVolumeChange,
   };
 
   // Keep the latest handlers available without re-registering the listener
@@ -758,6 +760,29 @@ export default function App() {
         case 'x':
           e.preventDefault();
           current.handleToggleConsume();
+          break;
+        case 'm':
+        case 'M':
+          e.preventDefault();
+          current.handleToggleMute();
+          break;
+        case '+':
+        case '=':
+          e.preventDefault();
+          current.handleVolumeChange(statusRef.current.volume + 5);
+          break;
+        case '-':
+        case '_':
+          e.preventDefault();
+          current.handleVolumeChange(statusRef.current.volume - 5);
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          current.handleSeek(statusRef.current.elapsed - 5);
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          current.handleSeek(statusRef.current.elapsed + 5);
           break;
         case 'd':
         case 'Delete':

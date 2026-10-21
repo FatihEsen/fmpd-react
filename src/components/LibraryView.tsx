@@ -1,4 +1,4 @@
-import React from 'react';
+import { Fragment, FC } from 'react';
 import { Song, LibraryFolder } from '../types';
 import { formatTime } from '../utils/formatters';
 import {
@@ -8,9 +8,7 @@ import {
   Plus,
   Play,
   Music,
-  Check,
   Search,
-  Sparkles
 } from 'lucide-react';
 
 interface LibraryViewProps {
@@ -25,7 +23,7 @@ interface LibraryViewProps {
   onAddFolderToQueue: (folderPath: string) => void;
 }
 
-export const LibraryView: React.FC<LibraryViewProps> = ({
+export const LibraryView: FC<LibraryViewProps> = ({
   currentPath,
   folders,
   searchQuery,
@@ -73,7 +71,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         <div className="flex items-center gap-2 text-sm flex-wrap">
           <FolderOpen className="w-4 h-4 text-[#fab387] shrink-0" />
           {breadcrumbItems.map((item, idx) => (
-            <React.Fragment key={item.path}>
+            <Fragment key={item.path}>
               {idx > 0 && <span className="text-[#6c7086]">/</span>}
               <button
                 type="button"
@@ -86,7 +84,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               >
                 {item.label}
               </button>
-            </React.Fragment>
+            </Fragment>
           ))}
         </div>
 
