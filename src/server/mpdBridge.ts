@@ -34,6 +34,13 @@ export interface MpdServerStatus {
   };
 }
 
+interface CommandEntry {
+  cmd: string;
+  resolve: (res: string[]) => void;
+  reject: (err: Error) => void;
+  timer?: NodeJS.Timeout;
+}
+
 export class MpdBridgeClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private host: string;
@@ -41,18 +48,16 @@ export class MpdBridgeClient extends EventEmitter {
   private password?: string;
   private isConnected = false;
   private buffer = '';
-  private commandQueue: Array<{
-    cmd: string;
-    resolve: (res: string[]) => void;
-    reject: (err: Error) => void;
-  }> = [];
-  private currentCommand: {
-    cmd: string;
-    resolve: (res: string[]) => void;
-    reject: (err: Error) => void;
-  } | null = null;
+  private commandQueue: CommandEntry[] = [];
+  private currentCommand: CommandEntry | null = null;
   private currentResponseLines: string[] = [];
   private pollTimer: NodeJS.Timeout | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private reconnectAttempts = 0;
+  /** Set to true by an explicit disconnect() so we stop auto-reconnecting. */
+  private manuallyClosed = false;
+  /** Every command must answer within this window, otherwise it is rejected. */
+  private commandTimeoutMs = 10000;
 
   constructor(host = 'localhost', port = 6600, password?: string) {
     super();
@@ -66,77 +71,168 @@ export class MpdBridgeClient extends EventEmitter {
     });
   }
 
+  /**
+   * Opens the TCP connection to MPD and resolves with the connection result.
+   * A failed attempt does NOT disable the client: the socket is retried with
+   * an exponential backoff until disconnect() is called explicitly.
+   */
   public connect(): Promise<boolean> {
+    this.manuallyClosed = false;
+    this.clearReconnectTimer();
+
     return new Promise((resolve) => {
-      this.disconnect();
-      this.socket = new net.Socket();
+      let settled = false;
+      let failTimer: NodeJS.Timeout | undefined;
+      let onGreeting: (greeting: string) => void = () => {};
 
-      this.socket.setTimeout(8000);
+      const settle = (value: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (failTimer) clearTimeout(failTimer);
+        // Never leave a stale greeting listener behind: several failed
+        // connection attempts would otherwise pile up and all fire at once
+        // as soon as MPD comes back, emitting 'connected' many times.
+        this.removeListener('greeting', onGreeting);
+        resolve(value);
+      };
 
-      this.socket.connect(this.port, this.host, () => {
-        // Socket opened, waiting for 'OK MPD ...'
-      });
+      this.teardownSocket();
 
-      this.socket.on('data', (chunk) => {
+      const socket = new net.Socket();
+      this.socket = socket;
+      socket.setTimeout(8000);
+
+      onGreeting = (greeting: string) => {
+        if (!greeting.startsWith('OK MPD')) {
+          settle(false);
+          return;
+        }
+        const wasConnected = this.isConnected;
+        this.isConnected = true;
+        this.reconnectAttempts = 0;
+
+        if (!wasConnected) {
+          this.emit('connected', greeting);
+        }
+
+        if (this.password) {
+          this.sendCommand(`password ${this.password}`).then(
+            () => settle(true),
+            () => settle(false)
+          );
+        } else {
+          settle(true);
+        }
+
+        this.startPolling();
+      };
+
+      this.once('greeting', onGreeting);
+
+      failTimer = setTimeout(() => {
+        if (!this.isConnected) {
+          settle(false);
+        }
+      }, 5000);
+
+      socket.on('data', (chunk) => {
         this.buffer += chunk.toString('utf-8');
         this.processBuffer();
       });
 
-      this.socket.on('error', (err) => {
-        console.warn(`[MPD Socket] Cannot connect to ${this.host}:${this.port} (MPD not running locally?):`, err.message);
+      socket.on('error', (err) => {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        console.warn(
+          `[MPD Socket] Cannot connect to ${this.host}:${this.port} (MPD not running?):`,
+          err?.message || code || 'unknown error'
+        );
         this.emit('error', err);
-        resolve(false);
+        settle(false);
       });
 
-      this.socket.on('close', () => {
-        this.isConnected = false;
-        this.emit('disconnected');
-        this.stopPolling();
+      socket.on('close', () => {
+        this.handleSocketClosed();
       });
 
-      this.socket.on('timeout', () => {
+      socket.on('timeout', () => {
         if (!this.isConnected) {
-          this.socket?.destroy();
-          resolve(false);
+          socket.destroy();
+          settle(false);
         }
       });
 
-      const onInit = (greeting: string) => {
-        if (greeting.startsWith('OK MPD')) {
-          this.isConnected = true;
-          this.emit('connected', greeting);
-          if (this.password) {
-            this.sendCommand(`password ${this.password}`)
-              .then(() => resolve(true))
-              .catch(() => resolve(true));
-          } else {
-            resolve(true);
-          }
-          this.startPolling();
-        } else {
-          resolve(false);
-        }
-      };
-
-      this.once('greeting', onInit);
-      setTimeout(() => {
-        if (!this.isConnected) resolve(false);
-      }, 5000);
+      socket.connect(this.port, this.host, () => {
+        // Socket opened, waiting for the 'OK MPD ...' greeting
+      });
     });
   }
 
+  /** Explicitly closes the connection and disables auto-reconnect. */
   public disconnect() {
-    this.stopPolling();
-    if (this.socket) {
-      this.socket.removeAllListeners();
-      this.socket.destroy();
-      this.socket = null;
-    }
+    this.manuallyClosed = true;
+    this.clearReconnectTimer();
+    this.teardownSocket();
     this.isConnected = false;
+    this.stopPolling();
+    this.failPendingCommands(new Error('MPD connection closed'));
   }
 
   public getConnected(): boolean {
     return this.isConnected;
+  }
+
+  /** Destroys the socket without emitting 'disconnected'. */
+  private teardownSocket() {
+    if (!this.socket) return;
+    this.socket.removeAllListeners();
+    try {
+      this.socket.destroy();
+    } catch {
+      // already destroyed
+    }
+    this.socket = null;
+  }
+
+  /** Called when the socket closes for any reason. */
+  private handleSocketClosed() {
+    const wasConnected = this.isConnected;
+    this.isConnected = false;
+    this.socket = null;
+    this.stopPolling();
+    this.failPendingCommands(new Error('MPD connection lost'));
+
+    if (wasConnected) {
+      this.emit('disconnected');
+    }
+
+    if (!this.manuallyClosed) {
+      this.scheduleReconnect();
+    }
+  }
+
+  /** Retries the connection with an exponential backoff (1s, 2s, 4s ... 10s). */
+  private scheduleReconnect() {
+    if (this.reconnectTimer || this.manuallyClosed) return;
+
+    this.reconnectAttempts += 1;
+    const delay = Math.min(10000, 1000 * Math.pow(2, this.reconnectAttempts - 1));
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect().catch(() => {});
+    }, delay);
+
+    // Never keep the process alive just for a reconnect attempt.
+    this.reconnectTimer.unref?.();
+
+    console.log(`[MPD Socket] Reconnecting to ${this.host}:${this.port} in ${delay}ms`);
+  }
+
+  private clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 
   private processBuffer() {
@@ -158,16 +254,21 @@ export class MpdBridgeClient extends EventEmitter {
   private handleLine(line: string) {
     if (line === 'OK') {
       if (this.currentCommand) {
-        this.currentCommand.resolve(this.currentResponseLines);
+        const finished = this.currentCommand;
+        const lines = this.currentResponseLines;
         this.currentCommand = null;
         this.currentResponseLines = [];
+        if (finished.timer) clearTimeout(finished.timer);
+        finished.resolve(lines);
         this.sendNext();
       }
     } else if (line.startsWith('ACK')) {
       if (this.currentCommand) {
-        this.currentCommand.reject(new Error(line));
+        const failed = this.currentCommand;
         this.currentCommand = null;
         this.currentResponseLines = [];
+        if (failed.timer) clearTimeout(failed.timer);
+        failed.reject(new Error(line));
         this.sendNext();
       }
     } else {
@@ -182,7 +283,28 @@ export class MpdBridgeClient extends EventEmitter {
       if (!this.isConnected || !this.socket) {
         return reject(new Error('MPD is not connected'));
       }
-      this.commandQueue.push({ cmd, resolve, reject });
+
+      const entry: CommandEntry = { cmd, resolve, reject };
+
+      // A command that never gets an answer must not hang the caller
+      // (REST handlers, the polling loop, ...) forever.
+      entry.timer = setTimeout(() => {
+        const queuedAt = this.commandQueue.indexOf(entry);
+        if (queuedAt !== -1) {
+          this.commandQueue.splice(queuedAt, 1);
+          entry.reject(new Error(`MPD command timed out: ${cmd}`));
+          return;
+        }
+        if (this.currentCommand === entry) {
+          this.currentCommand = null;
+          this.currentResponseLines = [];
+          entry.reject(new Error(`MPD command timed out: ${cmd}`));
+          this.sendNext();
+        }
+      }, this.commandTimeoutMs);
+      entry.timer.unref?.();
+
+      this.commandQueue.push(entry);
       if (!this.currentCommand) {
         this.sendNext();
       }
@@ -196,9 +318,27 @@ export class MpdBridgeClient extends EventEmitter {
     try {
       this.socket?.write(`${this.currentCommand.cmd}\n`);
     } catch (err) {
-      this.currentCommand.reject(err as Error);
+      const failed = this.currentCommand;
       this.currentCommand = null;
+      if (failed.timer) clearTimeout(failed.timer);
+      failed.reject(err as Error);
       this.sendNext();
+    }
+  }
+
+  /** Rejects the in-flight command and every queued one. */
+  private failPendingCommands(error: Error) {
+    if (this.currentCommand) {
+      const failed = this.currentCommand;
+      this.currentCommand = null;
+      this.currentResponseLines = [];
+      if (failed.timer) clearTimeout(failed.timer);
+      failed.reject(error);
+    }
+    const queued = this.commandQueue.splice(0, this.commandQueue.length);
+    for (const entry of queued) {
+      if (entry.timer) clearTimeout(entry.timer);
+      entry.reject(error);
     }
   }
 

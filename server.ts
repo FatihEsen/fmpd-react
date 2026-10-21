@@ -1,171 +1,58 @@
+/**
+ * FMPD standalone server (production).
+ *
+ * Serves the built frontend from `dist/` and exposes the MPD bridge
+ * (REST + WebSocket). When no production build exists it falls back to the
+ * Vite dev middleware so that `npm start` always yields a working app.
+ */
+
+import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import path from 'path';
-import { WebSocketServer, WebSocket } from 'ws';
+import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import { MpdBridgeClient } from './src/server/mpdBridge';
+import { MpdService } from './src/server/mpdService.ts';
+import { createMpdApiApp, attachMpdWebSocket } from './src/server/mpdApi.ts';
 
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || '3000', 10);
 
-  app.use(express.json());
-
-  // In-memory active MPD bridge client instance
-  let mpdBridge = new MpdBridgeClient(
+  const service = new MpdService(
     process.env.MPD_HOST || 'localhost',
     parseInt(process.env.MPD_PORT || '6600', 10),
     process.env.MPD_PASSWORD
   );
 
-  // WebSocket Server for real-time MPD bridge
-  const wss = new WebSocketServer({ server, path: '/api/mpd-ws' });
+  // REST + WebSocket bridge
+  app.use('/api/mpd', createMpdApiApp(service));
+  attachMpdWebSocket(server, service);
 
-  wss.on('connection', (ws) => {
-    console.log('[WS Bridge] Client connected');
+  // Attempt initial background connection (silent if MPD is not running yet)
+  service.connect().catch(() => {});
 
-    // Send initial connection state
-    ws.send(
-      JSON.stringify({
-        type: 'bridge_status',
-        connected: mpdBridge.getConnected(),
-      })
-    );
+  // Frontend assets
+  const distPath = path.join(process.cwd(), 'dist');
+  const hasProductionBuild = fs.existsSync(path.join(distPath, 'index.html'));
 
-    // If connected, send current status
-    if (mpdBridge.getConnected()) {
-      mpdBridge.getStatus().then((st) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'status', data: st }));
-        }
-      });
-    }
-
-    const onStatus = (st: any) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'status', data: st }));
-      }
-    };
-
-    mpdBridge.on('status', onStatus);
-
-    ws.on('message', async (raw) => {
-      try {
-        const msg = JSON.parse(raw.toString());
-        if (msg.cmd) {
-          const res = await mpdBridge.sendCommand(msg.cmd);
-          ws.send(JSON.stringify({ type: 'cmd_result', id: msg.id, data: res }));
-        }
-      } catch (err: any) {
-        ws.send(JSON.stringify({ type: 'error', message: err?.message || 'Error' }));
-      }
+  if (hasProductionBuild && process.env.NODE_ENV !== 'development') {
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
     });
-
-    ws.on('close', () => {
-      mpdBridge.off('status', onStatus);
-    });
-  });
-
-  // REST API Endpoints for MPD control & status
-  app.get('/api/mpd/status', async (req, res) => {
-    try {
-      if (!mpdBridge.getConnected()) {
-        return res.json({ connected: false, error: 'MPD not connected' });
-      }
-      const status = await mpdBridge.getStatus();
-      res.json({ connected: true, status });
-    } catch (err: any) {
-      res.status(500).json({ connected: false, error: err.message });
-    }
-  });
-
-  app.post('/api/mpd/connect', async (req, res) => {
-    const { host, port, password } = req.body;
-    try {
-      mpdBridge.disconnect();
-      mpdBridge = new MpdBridgeClient(host || 'localhost', port || 6600, password);
-      const connected = await mpdBridge.connect();
-
-      // Broadcast to WS clients
-      wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({ type: 'bridge_status', connected }));
-        }
-      });
-
-      res.json({ success: connected, host, port });
-    } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message });
-    }
-  });
-
-  app.post('/api/mpd/command', async (req, res) => {
-    const { command } = req.body;
-    try {
-      if (!mpdBridge.getConnected()) {
-        return res.status(400).json({ error: 'MPD not connected' });
-      }
-      const lines = await mpdBridge.sendCommand(command);
-      res.json({ success: true, result: lines });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.get('/api/mpd/queue', async (req, res) => {
-    try {
-      if (!mpdBridge.getConnected()) {
-        return res.json({ queue: [] });
-      }
-      const queue = await mpdBridge.getQueue();
-      res.json({ queue });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.get('/api/mpd/library', async (req, res) => {
-    try {
-      if (!mpdBridge.getConnected()) {
-        return res.json({ folders: [], songs: [] });
-      }
-      const p = (req.query.path as string) || '';
-      const data = await mpdBridge.getLibrary(p);
-      res.json(data);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.get('/api/mpd/all-songs', async (req, res) => {
-    try {
-      if (!mpdBridge.getConnected()) {
-        return res.json({ songs: [] });
-      }
-      const songs = await mpdBridge.getAllSongs();
-      res.json({ songs });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // Attempt initial background connection (silent if localhost:6600 is not running yet)
-  mpdBridge.connect().catch(() => {});
-
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== 'production') {
+    console.log('[FMPD Server] Serving production build from ./dist');
+  } else {
+    // No build available (or explicit dev mode): run Vite in middleware mode.
+    // The embedded bridge is disabled to avoid a second MPD connection.
+    process.env.FMPD_EMBEDDED_SERVER = 'true';
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    console.log('[FMPD Server] No production build found - running Vite in middleware mode');
   }
 
   server.listen(PORT, '0.0.0.0', () => {
@@ -173,4 +60,7 @@ async function startServer() {
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('[FMPD Server] Fatal startup error:', err);
+  process.exit(1);
+});
